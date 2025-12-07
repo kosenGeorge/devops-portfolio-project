@@ -1,0 +1,43 @@
+services:
+  website:
+    build: .
+    container_name: egor-website
+    ports:
+      - "8888:80"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    networks:
+      - devops-net
+
+  whoami:
+    image: containous/whoami
+    container_name: whoami-service
+    ports:
+      - "8889:80"
+    restart: unless-stopped
+    networks:
+      - devops-net
+
+  redis:
+    image: redis:alpine
+    container_name: redis-cache
+    ports:
+      - "6379:6379"
+    restart: unless-stopped
+    command: redis-server --appendonly yes
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    networks:
+      - devops-net
+
+networks:
+  devops-net:
+    driver: bridge
