@@ -1,7 +1,7 @@
 FROM nginx:alpine
 
 # Создаём красивый финальный сайт
-RUN cat > /usr/share/nginx/html/index.html << 'HTML'
+RUN mkdir -p /usr/share/nginx/html/legacy && mv /usr/share/nginx/html/index.html /usr/share/nginx/html/legacy/index.html && cat > /usr/share/nginx/html/index.html << 'HTML'
 <!DOCTYPE html>
 <html lang="ru">
 <head>
@@ -247,6 +247,12 @@ RUN cat > /usr/share/nginx/html/index.html << 'HTML'
 </body>
 </html>
 HTML
+
+# --- Мессенджер Teleport (PWA) в подпапке /messenger/ ---
+COPY messenger-app/ /usr/share/nginx/html/messenger/
+
+# Корневая страница-хаб со ссылкой на мессенджер
+COPY index.html /usr/share/nginx/html/index.html
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
