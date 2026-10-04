@@ -55,6 +55,7 @@ const Net = (() => {
     loginPhone: (phone, code, name) => api('/api/login_phone', { method: 'POST', body: { phone, code, name } }),
     signupEmail: (b) => api('/api/signup_email', { method: 'POST', body: b }),
     loginEmail: (email, password) => api('/api/login_email', { method: 'POST', body: { email, password } }),
+    forgotPassword: (b) => api('/api/forgot_password', { method: 'POST', body: b }),
     oauthLink: (prov) => api('/api/oauth/' + prov),            // {url} или {demo, token, user}
     me: () => api('/api/me'),
     profile: (patch) => api('/api/profile', { method: 'POST', body: patch }),

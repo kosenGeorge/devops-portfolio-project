@@ -183,10 +183,10 @@ function sendMail(to, subject, text) {
     }
     function authAndMail() {
       step('AUTH LOGIN', '334', () => step(Buffer.from(user).toString('base64'), '334', () =>
-        step(Buffer.from(pass).toString('base64'), '235', () => {
-          step('MAIL FROM:<' + from + '>', '250', () => step('RCPT TO:<' + to + '>', '250', finish));
-        }))));
-    }
+        step(Buffer.from(pass).toString('base64'), '235', () =>
+          step('MAIL FROM:<' + from + '>', '250', () => step('RCPT TO:<' + to + '>', '250', finish))
+        )));
+    } /*fixed*/
     function afterSecure() { step('EHLO teleport', null, authAndMail); }
     function startTls() {
       step('STARTTLS', '220', () => {
