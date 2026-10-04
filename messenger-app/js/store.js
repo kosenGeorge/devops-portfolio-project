@@ -4,13 +4,16 @@ const Store = (() => {
   const KEY = 'teleport_data_v3';
   const OLD_KEYS = ['teleport_data_v2', 'teleport_data_v1'];
 
-  const WALLPAPERS = ['pattern', 'ocean', 'sunset', 'forest', 'dark', 'none'];
+  const WALLPAPERS = ['pattern', 'ocean', 'sunset', 'forest', 'dark', 'none', 'custom'];
 
   const defaultData = () => ({
     me: null,                 // { name, avatar, bio } + поля аккаунта (id, username)
     theme: 'light',           // light | dark
     fontScale: 100,           // 85..135
     wallpaper: 'pattern',     // см. WALLPAPERS
+    palette: 'blue',          // акцент Material You: blue|violet|pink|orange|green|teal|cyan|slate
+    customWp: '',             // dataURL пользовательских обоев
+    wpTint: 38,               // затемнение фона, % (20..70) — для читаемости текста
     notif: true,
     sound: true,
     soundKind: 'melody',      // melody | marimba | chime | pop
@@ -53,6 +56,10 @@ const Store = (() => {
     out.statuses = out.statuses || {};
     out.contacts = out.contacts || {};
     if (!['melody', 'marimba', 'chime', 'pop'].includes(out.soundKind)) out.soundKind = 'melody';
+    if (typeof out.customWp !== 'string') out.customWp = '';
+    if (typeof out.wpTint !== 'number') out.wpTint = 38;
+    if (!WALLPAPERS.includes(out.wallpaper)) out.wallpaper = 'pattern';
+    if (out.wallpaper === 'custom' && !out.customWp) out.wallpaper = 'pattern';
     if (typeof out.sendReadReceipts !== 'boolean') out.sendReadReceipts = true;
     if (typeof out.showOnline !== 'boolean') out.showOnline = true;
     if (out.me && typeof out.me === 'object') { out.me.avatar = out.me.avatar || null; out.me.bio = out.me.bio || ''; }
@@ -142,6 +149,8 @@ const Store = (() => {
     setTheme(t) { data.theme = t; save(); },
     setFont(v) { data.fontScale = v; save(); },
     setWallpaper(w) { data.wallpaper = w; save(); },
+    setCustomWp(url) { data.customWp = url || ''; if (url) data.wallpaper = 'custom'; save(); },
+    setWpTint(v) { data.wpTint = Math.max(0, Math.min(80, v | 0)); save(); },
     setNotif(v) { data.notif = v; save(); },
     setSound(v) { data.sound = v; save(); },
     setEnterToSend(v) { data.enterToSend = v; save(); },

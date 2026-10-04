@@ -30,9 +30,14 @@
   /* ==================== INIT ==================== */
   function init() {
     Store.seedIfEmpty();
+    if (Store.data.palette && Store.data.palette !== 'blue')
+      document.documentElement.setAttribute('data-pal', Store.data.palette);
     applyTheme(Store.data.theme);
     applyFont(Store.data.fontScale);
     applyWallpaper(Store.data.wallpaper);
+    if (window.matchMedia) matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => {
+      if (Store.data.theme === 'auto') applyTheme('auto');
+    });
 
     bindLogin();
     bindSidebar();
@@ -292,6 +297,7 @@
       chatId: c.id, mid: m.id, text: m.text || '', ts: m.ts,
       mediaUrl: m.mediaUrl || null, fileUrl: m.fileUrl || null, fileName: m.fileName || null,
       audioUrl: m.audioUrl || null, audioDur: m.audioDur || null, geo: m.geo || null,
+      circleUrl: m.circleUrl || null, poster: m.poster || null, dur: m.dur || null,
       replyTo: m.replyTo ? { id: m.replyTo.id, name: m.replyTo.name, text: m.replyTo.text } : null,
       fwdFrom: m.forwardedFrom || null,
     });
@@ -607,7 +613,8 @@
     if (m.from === 'peer' && m.senderName && c.kind === 'global') b.appendChild(el('div', 'sender-name', esc(m.senderName)));
 
     const mediaSrc = m.media || m.mediaUrl;
-    if (mediaSrc && !m.deleted) {
+    if (m.circleUrl && !m.deleted) b.appendChild(circleBubble(m));
+    else if (mediaSrc && !m.deleted) {
       const img = el('img', 'media');
       img.src = mediaSrc; img.alt = 'фото'; img.loading = 'lazy';
       img.addEventListener('click', () => lightbox(mediaSrc));
@@ -680,6 +687,100 @@
     return wrap;
   }
   const fmtDur = (s) => Math.floor(s / 60) + ':' + String(Math.floor(s % 60)).padStart(2, '0');
+
+  /* ---------- видеокружок («видеосообщение») ---------- */
+  function circleBubble(m) {
+    const wrap = el('div', 'circle-msg' + (m.from === 'me' ? ' out' : ''));
+    let played = false;
+    if (m.poster) {
+      const img = el('img', 'cm-poster'); img.src = m.poster; img.alt = '';
+      wrap.appendChild(img);
+    } else {
+      wrap.appendChild(el('div', 'cm-placeholder', '<i class="bi bi-camera-video-fill"></i>'));
+    }
+    const ring = el('div', 'cm-ring');
+    for (let i = 0; i < 12; i++) ring.appendChild(el('i'));
+    wrap.appendChild(ring);
+    const play = el('div', 'cm-play', '<i class="bi bi-play-fill"></i>');
+    wrap.appendChild(play);
+    if (m.dur) wrap.appendChild(el('span', 'cm-dur', fmtDur(m.dur)));
+    wrap.addEventListener('click', () => {
+      U.haptic(8);
+      let v = wrap.querySelector('video');
+      if (!v) {
+        v = el('video', 'cm-video');
+        v.src = m.circleUrl; v.playsInline = true; v.loop = true;
+        v.muted = !played; // первый тап — со звуком разрешает только жест пользователя
+        v.addEventListener('play', () => { played = true; wrap.classList.add('playing'); play.style.opacity = '0'; });
+        v.addEventListener('pause', () => { wrap.classList.remove('playing'); play.style.opacity = '1'; });
+        wrap.insertBefore(v, ring);
+      }
+      if (wrap.classList.contains('playing')) { v.pause(); }
+      else { v.currentTime = 0; v.play().catch(() => {}); }
+    });
+    return wrap;
+  }
+
+  /* ---------- запись видеокружка ---------- */
+  let circleUI = null;
+  async function startCircle() {
+    if (typeof CircleRecorder === 'undefined') { toast('Браузер не поддерживает запись видео'); return; }
+    if (circleUI) return;
+    const ov = el('div', 'circle-overlay');
+    ov.innerHTML = `
+      <video class="co-video" playsinline muted></video>
+      <div class="co-ring"><svg viewBox="0 0 96 96">
+        <circle cx="48" cy="48" r="44" class="co-track"/><circle cx="48" cy="48" r="44" class="co-prog"/>
+      </svg></div>
+      <div class="co-time">0:00</div>
+      <button class="co-flip" title="Перевернуть камеру"><i class="bi bi-camera-reels"></i></button>
+      <button class="co-cancel" title="Отмена"><i class="bi bi-x-lg"></i></button>
+      <button class="co-rec" title="Начать запись"></button>
+      <button class="co-send hidden" title="Отправить"><i class="bi bi-check-lg"></i></button>`;
+    document.body.appendChild(ov);
+    requestAnimationFrame(() => ov.classList.add('show'));
+    circleUI = ov;
+    const vid = ov.querySelector('.co-video'), recBtn = ov.querySelector('.co-rec'),
+      sendBtn = ov.querySelector('.co-send'), cancelBtn = ov.querySelector('.co-cancel'),
+      flipBtn = ov.querySelector('.co-flip'), prog = ov.querySelector('.co-prog'), timeEl = ov.querySelector('.co-time');
+    const CIRC = 2 * Math.PI * 44;
+    prog.style.strokeDasharray = CIRC; prog.style.strokeDashoffset = CIRC;
+    let result = null, recording = false;
+    const close = () => { ov.classList.remove('show'); setTimeout(() => ov.remove(), 220); circleUI = null; };
+    try {
+      await CircleRecorder.start(vid);
+    } catch (e) { close(); toast('⚠️ Нет доступа к камере'); return; }
+    CircleRecorder.onTick = (s) => {
+      timeEl.textContent = fmtDur(s);
+      prog.style.strokeDashoffset = CIRC * (1 - Math.min(s, 60) / 60);
+    };
+    recBtn.onclick = async () => {
+      if (!recording) { recording = true; recBtn.classList.add('recording'); U.haptic(15); return; }
+      recording = false;
+      result = await CircleRecorder.stop();
+      if (!result || !result.blob) { close(); return; }
+      vid.srcObject = null; vid.src = URL.createObjectURL(result.blob); vid.loop = true; vid.muted = false;
+      vid.play().catch(() => {});
+      recBtn.classList.add('hidden'); sendBtn.classList.remove('hidden'); flipBtn.classList.add('hidden');
+    };
+    flipBtn.onclick = () => CircleRecorder.flip();
+    cancelBtn.onclick = () => { CircleRecorder.cancel(); close(); };
+    sendBtn.onclick = async () => {
+      if (!result) return;
+      sendBtn.disabled = true; sendBtn.innerHTML = '<span class="spinner"></span>';
+      const url = await uploadBlob(result.blob, result.blob.type || 'video/webm');
+      close();
+      if (!url) { toast('⚠️ Не удалось отправить кружок'); return; }
+      const c = Store.chat(currentChatId); if (!c) return;
+      const m = { id: Store.uid(), from: 'me', text: '', ts: Date.now(), status: 'sent',
+        circleUrl: url, poster: result.poster || null, dur: result.duration || 0,
+        replyTo, edited: false, deleted: false, starred: false };
+      Store.addMessage(c.id, m); liveSend(c, m);
+      replyTo = null; updateReplyHint();
+      renderMessages(c); renderChatList($('#searchInput').value); scrollBottom(true);
+      U.haptic(10);
+    };
+  }
 
   function deleteMsg(c, m) {
     confirmModal('Удалить сообщение?', () => {
@@ -785,6 +886,8 @@
     $('#sendBtn').addEventListener('click', send);
     $('#attachBtn').addEventListener('click', (e) => { e.stopPropagation(); $('#attachPanel').classList.toggle('hidden'); });
     $('#attPhoto').addEventListener('click', () => { $('#attachPanel').classList.add('hidden'); $('#fileInput').click(); });
+    $('#attVoice').addEventListener('click', () => { $('#attachPanel').classList.add('hidden'); startRec(); });
+    $('#attCircle').addEventListener('click', () => { $('#attachPanel').classList.add('hidden'); startCircle(); });
     $('#attFile').addEventListener('click', () => { $('#attachPanel').classList.add('hidden'); $('#anyFileInput').click(); });
     $('#attLoc').addEventListener('click', () => { $('#attachPanel').classList.add('hidden'); sendLocation(); });
     $('#fileInput').addEventListener('change', onPickImage);
@@ -1132,16 +1235,30 @@
     $('#importInput').addEventListener('change', importData);
   }
 
-  const DARK_THEMES = ['dark', 'midnight', 'noir'];
+  const DARK_THEMES = ['dark', 'midnight', 'noir', 'amoled', 'ocean'];
   function applyTheme(t) {
     t = t || 'light';
+    if (t === 'auto') {
+      const dark = window.matchMedia && matchMedia('(prefers-color-scheme: dark)').matches;
+      t = dark ? 'midnight' : 'system';
+    }
     document.documentElement.setAttribute('data-theme', t);
     document.body.classList.toggle('dark', DARK_THEMES.includes(t));
     const metas = document.querySelectorAll('meta[name="theme-color"]');
     if (metas[0]) metas[0].content = DARK_THEMES.includes(t) ? '#0f1320' : '#5b6cff';
   }
   function applyFont(v) { document.documentElement.style.fontSize = (16 * (v || 100) / 100) + 'px'; }
-  function applyWallpaper(w) { $('#messages').className = 'messages wp-' + (w || 'pattern'); }
+  function applyWallpaper(w) {
+    const box = $('#messages'); if (!box) return;
+    box.className = 'messages wp-' + (w || 'pattern');
+    if (w === 'custom' && Store.data.customWp) {
+      box.style.backgroundImage = 'url(' + Store.data.customWp + ')';
+      document.documentElement.style.setProperty('--wp-tint', (Store.data.wpTint ?? 38) / 100);
+      box.classList.add('is-tinted');
+    } else {
+      box.style.backgroundImage = '';
+    }
+  }
   function updateLiveBadge(on) {
     const b = $('#liveBadge');
     if (!Net.live) { b.classList.add('hidden'); return; }
@@ -1249,11 +1366,29 @@
     /* ---- оформление ---- */
     const lookSec = section('Оформление');
     const themeSel = el('select');
-    for (const [v, l] of [['light', '☀️ Классическая светлая'], ['dark', '🌙 Тёмная'], ['midnight', '🌌 Полночь'], ['ocean', '🌊 Океан'], ['sunset', '🌅 Закат'], ['emerald', '🍃 Изумруд'], ['noir', '🖤 Нуар']]) {
+    for (const [v, l] of [['light', '☀️ Классическая светлая'], ['dark', '🌙 Тёмная'], ['midnight', '🌌 Полночь'], ['amoled', '⚫ AMOLED (чисто чёрная)'], ['ocean', '🌊 Океан'], ['sunset', '🌅 Закат'], ['emerald', '🍃 Изумруд'], ['noir', '🖤 Нуар'], ['auto', '🌗 Авто (по системе)']]) {
       const o = el('option'); o.value = v; o.textContent = l; if (Store.data.theme === v) o.selected = true; themeSel.appendChild(o);
     }
     themeSel.onchange = () => { Store.setTheme(themeSel.value); applyTheme(themeSel.value); };
     addRow(lookSec, 'Тема', themeSel);
+
+    /* палитра Material You — 8 акцентов */
+    const palWrap = el('div', 'pal-row');
+    const PAL = [['blue', 'Синий'], ['violet', 'Фиолет'], ['pink', 'Розовый'], ['orange', 'Оранжевый'], ['green', 'Зелёный'], ['teal', 'Бирюзовый'], ['cyan', 'Голубой'], ['slate', 'Индиго']];
+    for (const [p, name] of PAL) {
+      const b = el('button', 'pal-dot pal-' + p);
+      b.title = name;
+      if ((Store.data.palette || 'blue') === p) b.classList.add('active');
+      b.onclick = () => {
+        Store.data.palette = p; Store.save();
+        if (p === 'blue') document.documentElement.removeAttribute('data-pal');
+        else document.documentElement.setAttribute('data-pal', p);
+        palWrap.querySelectorAll('.pal-dot').forEach(x => x.classList.remove('active'));
+        b.classList.add('active'); U.haptic(6);
+      };
+      palWrap.appendChild(b);
+    }
+    addRow(lookSec, 'Цветовой акцент', palWrap, 'Material You — цвет по всему приложению');
 
     const fsWrap = el('div', 'font-ctl');
     const minus = el('button', 'btn-ghost sm', '−');
@@ -1265,14 +1400,47 @@
     addRow(lookSec, 'Размер шрифта', fsWrap);
 
     const wpSel = el('select');
-    const WP_NAMES = { pattern: 'Классические (узор)', ocean: 'Океан', sunset: 'Закат', forest: 'Лес', dark: 'Тёмные', none: 'Без фона' };
+    const WP_NAMES = { pattern: 'Классические (узор)', ocean: 'Океан', sunset: 'Закат', forest: 'Лес', dark: 'Тёмные', none: 'Без фона', custom: '🖼 Своё фото' };
     for (const w of Store.WALLPAPERS) {
+      if (w === 'custom' && !Store.data.customWp) continue;
       const o = el('option'); o.value = w; o.textContent = WP_NAMES[w] || w;
       if ((Store.data.wallpaper || 'pattern') === w) o.selected = true;
       wpSel.appendChild(o);
     }
     wpSel.onchange = () => { Store.setWallpaper(wpSel.value); applyWallpaper(wpSel.value); };
     addRow(lookSec, 'Обои чата', wpSel);
+
+    /* --- свои обои: загрузка + затемнение под читаемость --- */
+    const wpBox = el('div', 'wp-upload-row');
+    const wpFile = el('input'); wpFile.type = 'file'; wpFile.accept = 'image/*'; wpFile.className = 'hidden';
+    const wpBtn = el('button', 'btn-ghost sm', '📁 Загрузить изображение');
+    wpBtn.onclick = () => wpFile.click();
+    wpFile.onchange = async () => {
+      const f = wpFile.files[0]; if (!f) return;
+      try {
+        const url = await fileToDataUrl(f, 1400);   // сжатие до разумного размера
+        Store.setCustomWp(url); applyWallpaper('custom');
+        toast('Обои установлены ✨');
+        const opt = [...wpSel.options].find(o => o.value === 'custom');
+        if (!opt) { const o = el('option'); o.value = 'custom'; o.textContent = WP_NAMES.custom; wpSel.appendChild(o); }
+        wpSel.value = 'custom';
+      } catch (e) { toast('⚠️ Не удалось прочитать файл'); }
+      wpFile.value = '';
+    };
+    const tintWrap = el('div', 'font-ctl');
+    const tMinus = el('button', 'btn-ghost sm', '−');
+    const tVal = el('span', 'font-val', (Store.data.wpTint ?? 38) + '%');
+    const tPlus = el('button', 'btn-ghost sm', '＋');
+    const chTint = (d) => {
+      const v = Math.max(0, Math.min(80, (Store.data.wpTint ?? 38) + d));
+      Store.setWpTint(v); tVal.textContent = v + '%';
+      document.documentElement.style.setProperty('--wp-tint', v / 100);
+    };
+    tMinus.onclick = () => chTint(-5); tPlus.onclick = () => chTint(5);
+    tintWrap.append(tMinus, tVal, tPlus);
+    wpBox.append(wpBtn, wpFile);
+    addRow(lookSec, 'Свои обои', wpBox, 'Фото автоматически затемняется для читаемости текста');
+    addRow(lookSec, 'Затемнение обоев', tintWrap);
     box.appendChild(lookSec);
 
     /* ---- уведомления и звук ---- */
@@ -1697,7 +1865,7 @@
     /* ===== мягкая адаптация под мобильную клавиатуру (Android + iOS) ===== */
     const setKbInset = (h) => {
       h = Math.max(0, Math.round(h));
-      document.body.classList.toggle('kb-open', h > 60);
+      document.documentElement.classList.toggle('kb-open', h > 60);
       const cur = parseInt(document.documentElement.style.getPropertyValue('--kb') || '0', 10);
       if (Math.abs(cur - h) < 4) return;
       document.documentElement.style.setProperty('--kb', h + 'px');

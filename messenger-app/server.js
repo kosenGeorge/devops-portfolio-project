@@ -347,6 +347,7 @@ function saveMessage(m) {
     media: JSON.stringify({
       mediaUrl: m.mediaUrl || null, fileUrl: m.fileUrl || null, fileName: m.fileName || null,
       audioUrl: m.audioUrl || null, audioDur: m.audioDur || null, geo: m.geo || null,
+      circleUrl: m.circleUrl || null, poster: m.poster || null, dur: m.dur || null,
     }),
     ts: m.ts, reply_to: m.replyTo ? JSON.stringify(m.replyTo) : null,
     fwd_from: m.fwdFrom || null, edited: 0, deleted: 0,
@@ -427,6 +428,7 @@ wss.on('connection', (ws, req) => {
           mediaUrl: clip(m.mediaUrl), fileUrl: clip(m.fileUrl), fileName: clip(m.fileName),
           audioUrl: clip(m.audioUrl), audioDur: Number(m.audioDur) || null,
           geo: clip(m.geo),
+          circleUrl: clip(m.circleUrl), poster: clip(m.poster), dur: Number(m.dur) || null,
           ts: Number(m.ts) || Date.now(),
           replyTo: m.replyTo && typeof m.replyTo === 'object'
             ? { id: String(m.replyTo.id || '').slice(0, 32), name: String(m.replyTo.name || '').slice(0, 32), text: String(m.replyTo.text || '').slice(0, 120) }

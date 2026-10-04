@@ -443,14 +443,15 @@ mark { background: rgba(255, 208, 0, .5); color: inherit; border-radius: 4px; pa
   background: transparent; position: relative;
 }
 @media (max-width: 760px) {
-  /* клавиатура: панель ввода плавно поднимается над ней, лента «дышит» */
+  /* клавиатура: панель ввода плавно поднимается над ней, лента «дышит»,
+     шапка чата остаётся на месте (только лёгкое приглушение) */
   .composer { padding-bottom: calc(8px + env(safe-area-inset-bottom) + var(--kb)); transition: padding-bottom .22s cubic-bezier(.25,.9,.3,1); }
-  .chat-header { transition: transform .22s ease, opacity .22s ease; }
-  body.kb-open .chat-header { transform: translateY(calc(var(--kb) * -1)); opacity: 0; pointer-events: none; }
-  body.kb-open .messages { transition: height .22s ease; }
-  body.kb-open .scroll-bottom { bottom: calc(82px + var(--kb)); }
-  body.kb-open .toast { transform: translate(-50%, calc(var(--kb) * -1)); }
-  body.kb-open .reply-hint, body.kb-open .rec-bar { margin-bottom: 0; }
+  .chat-header { transition: filter .22s ease, background .22s ease; }
+  html.kb-open .chat-header { background: color-mix(in srgb, var(--panel) 88%, transparent); }
+  html.kb-open .messages { transition: height .22s ease; }
+  html.kb-open .scroll-bottom { bottom: calc(82px + var(--kb)); }
+  html.kb-open .toast { transform: translate(-50%, calc(var(--kb) * -1)); }
+  html.kb-open .reply-hint, html.kb-open .rec-bar { margin-bottom: 0; }
 }
 .input-wrap {
   flex: 1; background: var(--bg); border-radius: 22px; box-shadow: var(--shadow-md);
