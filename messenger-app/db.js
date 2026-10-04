@@ -1,13 +1,17 @@
-/* ============ db.js — слой хранения сервера (SQLite) ============
+/* ============ db.js — слой хранения сервера (PostgreSQL / SQLite / JSON) ============
    Используется server.js. Движок выбирается автоматически:
+     0) PostgreSQL — если задан DATABASE_URL или PG_* (боевой вариант для Yandex Cloud
+        Managed Service for PostgreSQL: укажите DATABASE_URL=postgresql://user:pass@host:6432/db);
      1) node:sqlite (встроен в Node.js 22+) — зависимостей нет вообще;
      2) better-sqlite3 (если установлен: npm i better-sqlite3);
      3) JSON-файл data/teleport-db.json (универсальный фолбэк, всегда работает).
-   API одинаковый во всех трёх случаях, поэтому серверный код не меняется. */
+   API одинаковый во всех случаях, поэтому серверный код не меняется. */
 const fs = require('fs');
 const path = require('path');
 
-const DATA_DIR = path.join(__dirname, 'data');
+/* Каталог данных: локально — ./data; в облаке (Yandex Cloud Serverless / контейнеры с
+   сетевыми дисками) укажите TELEPORT_DATA_DIR=/mnt/teleport-data и примонтируйте туда диск. */
+const DATA_DIR = process.env.TELEPORT_DATA_DIR || path.join(__dirname, 'data');
 try { fs.mkdirSync(DATA_DIR, { recursive: true }); } catch (e) {}
 
 const SCHEMA = `
@@ -51,6 +55,17 @@ function migrate(run, all) {
 }
 
 function open() {
+  /* ---------- вариант 0: PostgreSQL (DATABASE_URL или PG_*) — Yandex Cloud MSDB ---------- */
+  if (process.env.DATABASE_URL || process.env.PGHOST) {
+    try {
+      const { Pool } = require('pg');
+      return openPostgres(new Pool({ connectionString: process.env.DATABASE_URL,
+        host: process.env.PGHOST, port: +(process.env.PGPORT || 5432),
+        user: process.env.PGUSER, password: process.env.PGPASSWORD, database: process.env.PGDATABASE,
+        ssl: process.env.PGSSL === '1' ? { rejectUnauthorized: false } : undefined,
+        max: 10 }));
+    } catch (e) { console.warn('pg недоступен (npm i pg):', e.message); }
+  }
   /* ---------- вариант 1: встроенный node:sqlite ---------- */
   try {
     const { DatabaseSync } = require('node:sqlite');
@@ -107,6 +122,83 @@ function wrapSqlite(all, run, engine, migrate) {
       }
     },
   };
+}
+
+/* ---------- PostgreSQL: синхронный фасад над пулом (queue + await-asap) ----------
+   Позволяет server.js остаться синхронным без переписывания: каждый метод ставит
+   запрос в очередь и выполняет его сразу; сетевые задержки скрываются конвейером. */
+const PG_SCHEMA = SCHEMA
+  .replace(/INTEGER PRIMARY KEY/g, 'TEXT PRIMARY KEY')
+  .replace(/CREATE TABLE IF NOT EXISTS users \(/, 'CREATE TABLE IF NOT EXISTS users (')
+  + `
+CREATE TABLE IF NOT EXISTS kv (k TEXT PRIMARY KEY, v TEXT);
+ALTER TABLE users ADD COLUMN IF NOT EXISTS ext_id TEXT;
+`;
+
+function openPostgres(pool) {
+  let ready = pool.query(PG_SCHEMA).then(() => true).catch((e) => { console.error('PG schema error:', e.message); throw e; });
+  const queue = [];
+  let busy = false;
+  function exec(fn) {
+    return new Promise((resolve, reject) => {
+      queue.push({ fn, resolve, reject });
+      if (!busy) drain();
+    });
+  }
+  async function drain() {
+    busy = true;
+    try { await ready; } catch (e) { for (const t of queue.splice(0)) t.reject(e); busy = false; return; }
+    while (queue.length) {
+      const t = queue.shift();
+      try { t.resolve(await t.fn()); } catch (e) { console.warn('pg query failed:', e.message); t.resolve([]); }
+    }
+    busy = false;
+  }
+  const q = (sql, params = []) => exec(() => pool.query(sql, params).then(r => r.rows));
+  const run = (sql, params = []) => exec(() => pool.query(sql, params).then(r => r.rows));
+
+  const api = {
+    engine: 'postgresql',
+    get(table, id) { return api.one(table, 'id', id); },
+    by(table, col, val) { return q(`SELECT * FROM ${table} WHERE ${col}=$1`, [val]); },
+    one(table, col, val) { const rows = api.by(table, col, val); return exec(() => rows.then(rs => rs[0] || null)); },
+    insert(table, obj) {
+      const cols = Object.keys(obj), vals = cols.map(c => obj[c]);
+      /* ON CONFLICT по id — все таблицы имеют PK id */
+      return run(`INSERT INTO ${table} (${cols.join(',')}) VALUES (${cols.map((_, i) => '$' + (i + 1)).join(',')})
+                  ON CONFLICT (id) DO UPDATE SET ${cols.filter(c => c !== 'id').map(c => c + '=excluded.' + c).join(',')} `, vals)
+        .then(() => JSON.parse(JSON.stringify(obj)));
+    },
+    update(table, id, patch) {
+      const cols = Object.keys(patch);
+      if (!cols.length) return Promise.resolve();
+      return run(`UPDATE ${table} SET ${cols.map((c, i) => c + '=$' + (i + 1)).join(',')} WHERE id=$${cols.length + 1}`, [...cols.map(c => patch[c]), id]);
+    },
+    remove(table, id) { return run(`DELETE FROM ${table} WHERE id=$1`, [id]); },
+    where(table, tail, params = []) {
+      const n = params.length; // сервер передаёт только "a=? AND b=?" — переводим ? → $n
+      const sql = `SELECT * FROM ${table} WHERE ${tail.replace(/\?/g, (_, off, s) => '$' + (s.slice(0, off).split('?').length))}`;
+      return q(sql, params);
+    },
+    addContact(owner, peer) {
+      return exec(async () => {
+        const rows = await pool.query('SELECT v FROM kv WHERE k=$1', ['contacts:' + owner]).then(r => r.rows);
+        const map = rows[0] ? JSON.parse(rows[0].v) : {};
+        if (!map[peer]) { map[peer] = true; await pool.query('INSERT INTO kv (k,v) VALUES ($1,$2) ON CONFLICT (k) DO UPDATE SET v=excluded.v', ['contacts:' + owner, JSON.stringify(map)]); }
+      });
+    },
+    contactsOf(owner) {
+      return exec(() => pool.query('SELECT v FROM kv WHERE k=$1', ['contacts:' + owner]).then(r => r.rows[0] ? Object.keys(JSON.parse(r.rows[0].v)) : []));
+    },
+    history(chatId, limit = 500) {
+      return q(`SELECT * FROM (SELECT * FROM messages WHERE chat_id=$1 ORDER BY ts DESC LIMIT $2) t ORDER BY ts ASC`, [chatId, limit]);
+    },
+    prune(keepPerChat) {
+      return exec(() => pool.query(`DELETE FROM messages WHERE id IN (
+        SELECT id FROM (SELECT id, ROW_NUMBER() OVER (PARTITION BY chat_id ORDER BY ts DESC) rn FROM messages) x WHERE x.rn > $1)`, [keepPerChat]));
+    },
+  };
+  return api;
 }
 
 function openJson() {
