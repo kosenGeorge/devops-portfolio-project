@@ -20,13 +20,25 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Prepare site (root hub + /messenger/)
+      - name: Prepare site (hub landing + /messenger/)
         run: |
           mkdir -p _site
-          cp index.html _site/index.html
+          # Извлекаем финальный сайт из Dockerfile (тот же код, что и в docker build) —
+          # чтобы на GitHub Pages НЕ попадала старая докер-заглушка из корня репозитория
+          sed -n '/^RUN mkdir -p \/usr\/share\/nginx\/html\/legacy/,/^HTML$/p' Dockerfile \
+            | sed '1d;$d' > _site/index.html
           cp -r messenger-app _site/messenger
+          rm -rf _site/messenger/node_modules _site/messenger/capacitor _site/messenger/serve.js
           # служебные файлы для Pages
           touch _site/.nojekyll
+
+      - name: Verify no docker placeholder leaked
+        run: |
+          grep -qi "My Docker Website" _site/index.html && { echo "ERROR: old placeholder in _site"; exit 1; } || true
+          grep -q "Мой DevOps Путь" _site/index.html || { echo "ERROR: landing page not extracted"; exit 1; }
+          # на лендинге должна быть рабочая ссылка на мессенджер в подпапке Pages
+          sed -i 's|href="/messenger/"|href="messenger/"|' _site/index.html
+          test -f _site/messenger/index.html || { echo "ERROR: messenger missing"; exit 1; }
 
       - uses: actions/configure-pages@v5
 
