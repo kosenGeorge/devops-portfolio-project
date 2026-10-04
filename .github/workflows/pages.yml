@@ -1,0 +1,55 @@
+name: Deploy to GitHub Pages
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Prepare site (landing + messenger)
+        run: |
+          mkdir -p _site
+          cp index.html _site/index.html
+          cp -r messenger-app _site/messenger-app
+          rm -rf _site/messenger-app/node_modules _site/messenger-app/capacitor _site/messenger-app/serve.js
+          # алиасы: / и /messenger/ тоже ведут в мессенджер
+          mkdir -p _site/messenger
+          sed 's|href="messenger-app/index.html"|href="./index.html"|' index.html > /dev/null || true
+          touch _site/.nojekyll
+
+      - name: Sanity checks
+        run: |
+          test -f _site/messenger-app/index.html || { echo "ERROR: messenger missing"; exit 1; }
+          test -f _site/messenger-app/sw.js || { echo "ERROR: sw.js missing"; exit 1; }
+          grep -qi "My Docker Website" _site/index.html && { echo "ERROR: docker placeholder leaked"; exit 1; } || true
+          grep -q "Teleport" _site/index.html || { echo "ERROR: landing broken"; exit 1; }
+
+      - uses: actions/configure-pages@v5
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

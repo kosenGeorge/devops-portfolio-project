@@ -135,3 +135,32 @@ This project was developed as part of a practical DevOps learning journey
 Special thanks to the Docker and Ubuntu communities for excellent documentation
 
 Inspired by real-world production infrastructure patterns
+
+---
+
+# 📨 Teleport — мессенджер (PWA → Android APK)
+
+В папке [`messenger-app/`](messenger-app/) лежит **полностью готовый мессенджер в стиле Telegram**:
+чаты, галочки прочтения, «печатает…», ответы/редактирование/удаление, фото, эмодзи, поиск,
+тёмная тема, уведомления, офлайн-режим и сборка в `.apk` через Capacitor или PWA Builder.
+
+📖 Инструкция по запуску и сборке APK: **[messenger-app/README.md](messenger-app/README.md)**
+
+```bash
+# быстрый старт локально
+cd messenger-app && node serve.js   # → http://localhost:8080
+```
+
+### 🐳 Мессенджер внутри вашего Docker-стека
+Мессенджер уже подключён к `Dockerfile`: после пересборки контейнера он будет доступен по адресу
+**http://192.168.0.43:8888/messenger/**, а на главной странице появится ссылка на него.
+
+```bash
+docker compose up -d --build website
+# затем откройте http://192.168.0.43:8888/messenger/
+```
+
+### 🌍 GitHub Pages (публичный доступ из интернета)
+Добавлен workflow `.github/workflows/pages.yml`. Включите его один раз:
+**Settings → Pages → Source: GitHub Actions** — и после пула в `main` сайт будет на
+`https://kosenGeorge.github.io/<репозиторий>/messenger/` (этот же URL потом удобен для PWA Builder / APK).

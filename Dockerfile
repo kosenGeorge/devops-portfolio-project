@@ -1,7 +1,7 @@
 FROM nginx:alpine
 
 # Создаём красивый финальный сайт
-RUN cat > /usr/share/nginx/html/index.html << 'HTML'
+RUN mkdir -p /usr/share/nginx/html/legacy && mv /usr/share/nginx/html/index.html /usr/share/nginx/html/legacy/index.html && cat > /usr/share/nginx/html/index.html << 'HTML'
 <!DOCTYPE html>
 <html lang="ru">
 <head>
@@ -139,6 +139,13 @@ RUN cat > /usr/share/nginx/html/index.html << 'HTML'
             font-size: 0.9rem;
         }
         
+        .tg-btn {
+            display: inline-block; background: #3390ec; color: #fff; text-decoration: none;
+            padding: 14px 28px; border-radius: 30px; font-size: 1.1rem; font-weight: 600;
+            box-shadow: 0 4px 20px rgba(51,144,236,.4); transition: transform .2s;
+        }
+        .tg-btn:hover { transform: translateY(-3px); }
+
         @media (max-width: 768px) {
             h1 {
                 font-size: 2rem;
@@ -216,6 +223,10 @@ RUN cat > /usr/share/nginx/html/index.html << 'HTML'
             </div>
         </div>
         
+        <div style="text-align:center;margin-bottom:3rem">
+            <a href="/messenger/" class="tg-btn">💬 Открыть мессенджер Teleport →</a>
+        </div>
+
         <footer>
             <p>👨‍💻 Проект создал: <strong>Егор (kosenGeorge)</strong></p>
             <p>📧 kosenkovegor01@gmail.com</p>
@@ -247,6 +258,12 @@ RUN cat > /usr/share/nginx/html/index.html << 'HTML'
 </body>
 </html>
 HTML
+
+# --- Мессенджер Teleport (PWA) в подпапке /messenger/ ---
+COPY messenger-app/ /usr/share/nginx/html/messenger/
+
+# Корневая страница-хаб со ссылкой на мессенджер
+COPY index.html /usr/share/nginx/html/index.html
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \

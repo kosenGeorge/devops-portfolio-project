@@ -1,0 +1,43 @@
+name: Build Android APK
+
+on:
+  push:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+jobs:
+  build-apk:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Setup Java (for Android Gradle)
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - name: Install Capacitor & add Android platform
+        working-directory: messenger-app/capacitor
+        run: |
+          npm install --yes
+          npx --yes cap add android
+          npx --yes cap sync
+
+      - name: Build debug APK
+        working-directory: messenger-app/capacitor/android
+        run: |
+          chmod +x gradlew
+          ./gradlew assembleDebug
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: teleport-apk
+          path: messenger-app/capacitor/android/app/build/outputs/apk/debug/app-debug.apk
