@@ -1,12 +1,21 @@
-/* ============ server.js — Teleport PRO: статика + аккаунты + WebSocket-чат ============
-   Использование:  node server.js            (http://localhost:8080)
+/* ============ server.js — Teleport PRO: боевой сервер (статика + аккаунты + WS-чат) ============
+   Использование:  node server.js          (или: npm start)
    Возможности:
-     • регистрация/вход: телефон+код, e-mail+пароль, VK, Яндекс (OAuth или демо-режим)
-     • база данных: SQLite (node:sqlite / better-sqlite3) или JSON-файл — см. db.js
+     • регистрация/вход: телефон+SMS-код, e-mail+пароль, VK ID, Яндекс ID (боевой OAuth 2.0)
+     • база данных: SQLite (node:sqlite / better-sqlite3) или JSON-фолбэк — см. db.js
      • история сообщений на сервере (пересылается при входе — чаты на любом устройстве)
      • личные чаты с людьми по @username, контакты, поиск пользователей
      • доставка / прочтение / «печатает…» / presence / сигнализация звонков (WebRTC)
-     • загрузка фото и голосовых сообщений на сервер */
+     • загрузка фото, файлов, голосовых и видеокружков на сервер
+
+   ⚙️ ПЕРЕМЕННЫЕ ОКРУЖЕНИЯ (создайте файл messenger-app/.env — сервер читает его сам):
+     PUBLIC_URL=https://ваш-домен.ru       # обязателен для VK/Яндекс OAuth (https!)
+     VK_CLIENT_ID=...        VK_CLIENT_SECRET=...         # id.mycloud.ru → приложения
+     YANDEX_CLIENT_ID=...    YANDEX_CLIENT_SECRET=...     # oauth.yandex.ru → сервисы
+     SMS_PROVIDER=smscru     SMSCRU_LOGIN=... SMSCRU_PASSWORD=...   # smsc.ru
+     # либо: SMS_PROVIDER=cellhippus CELLHIPPUS_TOKEN=...           # cellhippus.ru
+     # ЛИБО включите EMAIL_MODE=1 — код будет приходить на e-mail пользователя (SMTP_* ниже).
+     Без SMS-шлюза и EMAIL_MODE вход по телефону заблокирован (приложение покажет подсказку). */
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
@@ -14,15 +23,26 @@ const crypto = require('crypto');
 const { WebSocketServer } = require('ws');
 const { db } = require('./db.js');
 
+/* ---- .env: загружаем переменные из файла messenger-app/.env (без зависимостей) ---- */
+(function loadEnv() {
+  try {
+    const txt = fs.readFileSync(path.join(__dirname, '.env'), 'utf8');
+    for (const line of txt.split('\n')) {
+      const m = /^\s*([A-Z0-9_]+)\s*=\s*(.*)\s*$/.exec(line);
+      if (m && process.env[m[1]] === undefined) process.env[m[1]] = m[2].replace(/^["']|["']$/g, '');
+    }
+  } catch (e) {}
+})();
+
 const ROOT = __dirname;
 const PORT = process.env.PORT || 8080;
 const MEDIA_DIR = path.join(ROOT, 'uploads');
 try { fs.mkdirSync(MEDIA_DIR, { recursive: true }); } catch (e) {}
 
-/* ---- конфигурация OAuth (необязательная). Без ключей вход работает в демо-режиме ---- */
+/* ---- конфигурация OAuth (боевая, из .env) ---- */
 const OAUTH = {
-  vk:     { client_id: process.env.VK_CLIENT_ID || '',     redirect: '/auth/vk/callback' },
-  yandex: { client_id: process.env.YANDEX_CLIENT_ID || '', redirect: '/auth/yandex/callback' },
+  vk:     { client_id: process.env.VK_CLIENT_ID || '',     secret: process.env.VK_CLIENT_SECRET || '',     redirect: '/auth/vk/callback' },
+  yandex: { client_id: process.env.YANDEX_CLIENT_ID || '', secret: process.env.YANDEX_CLIENT_SECRET || '', redirect: '/auth/yandex/callback' },
 };
 const PUBLIC_URL = process.env.PUBLIC_URL || ''; // напр. https://t.example.ru — для редиректов OAuth
 
@@ -32,7 +52,10 @@ const MIME = {
   '.webmanifest': 'application/manifest+json', '.png': 'image/png',
   '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.gif': 'image/gif', '.webp': 'image/webp',
   '.svg': 'image/svg+xml', '.woff': 'font/woff', '.woff2': 'font/woff2',
-  '.mp3': 'audio/mpeg', '.ogg': 'audio/ogg', '.wav': 'audio/wav', '.m4a': 'audio/mp4', '.webm': 'audio/webm',
+  '.mp3': 'audio/mpeg', '.ogg': 'audio/ogg', '.wav': 'audio/wav', '.m4a': 'audio/mp4',
+  '.webm': 'video/webm', '.mp4': 'video/mp4',
+  '.pdf': 'application/pdf', '.zip': 'application/zip', '.txt': 'text/plain; charset=utf-8',
+  '.ico': 'image/x-icon',
 };
 
 /* ==================== helpers ==================== */
@@ -87,8 +110,9 @@ function publicUser(u) {
   return { id: u.id, name: u.name, username: u.username, avatar: u.avatar || null, bio: u.bio || '', provider: u.provider };
 }
 
-/* ---- коды подтверждения (демо: возвращаем в ответе; боевой режим — SMS-шлюз) ---- */
+/* ---- коды подтверждения + боевая отправка (SMS-шлюз или e-mail) ---- */
 const codes = new Map();
+const lastSmsAt = new Map(); // rate-limit: не чаще 1 SMS на номер раз в 60 секунд
 function issueCode(key) {
   const code = String(crypto.randomInt(100000, 999999));
   codes.set(key, { code, exp: Date.now() + 5 * 60000 });
@@ -99,6 +123,96 @@ function checkCode(key, code) {
   if (!r || r.exp < Date.now()) return false;
   if (r.code !== String(code).trim()) return false;
   codes.delete(key); return true;
+}
+
+function fetchTimeout(url, opts = {}, ms = 8000) {
+  const ctrl = new AbortController();
+  const t = setTimeout(() => ctrl.abort(), ms);
+  return fetch(url, Object.assign({ signal: ctrl.signal }, opts)).finally(() => clearTimeout(t));
+}
+
+/* SMS через smsc.ru */
+async function sendSmsSmscru(phone, text) {
+  const login = process.env.SMSCRU_LOGIN, pass = process.env.SMSCRU_PASSWORD;
+  if (!login || !pass) throw new Error('SMSCRU_LOGIN/SMSCRU_PASSWORD не заданы в .env');
+  const u = new URL('https://smsc.ru/send.php/');
+  u.searchParams.set('login', login); u.searchParams.set('password', pass);
+  u.searchParams.set('phone', phone); u.searchParams.set('mes', text); u.searchParams.set('charset', 'utf-8');
+  const j = await fetchTimeout(u).then(r => r.json());
+  if (j.error && j.error !== 'None') throw new Error('smsc.ru: ' + (j.error_code || '') + ' ' + j.error);
+  return true;
+}
+/* SMS через Cellhippus */
+async function sendSmsCellhippus(phone, text) {
+  const token = process.env.CELLHIPPUS_TOKEN;
+  if (!token) throw new Error('CELLHIPPUS_TOKEN не задан в .env');
+  const j = await fetchTimeout('https://api.cellhippus.ru/v1/sms/send', {
+    method: 'POST', headers: { Authorization: 'Bearer ' + token, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ phone, message: text }),
+  }).then(r => r.json());
+  if (j.error) throw new Error('cellhippus: ' + j.error);
+  return true;
+}
+/* E-mail без npm-зависимостей — raw SMTP (STARTTLS/PLAIN AUTH) */
+function sendMail(to, subject, text) {
+  return new Promise((resolve, reject) => {
+    const net = require('net'), tls = require('tls');
+    const host = process.env.SMTP_HOST, port = +(process.env.SMTP_PORT || 465), user = process.env.SMTP_USER, pass = process.env.SMTP_PASS;
+    if (!host || !user || !pass) return reject(new Error('SMTP_HOST/SMTP_USER/SMTP_PASS не заданы в .env'));
+    const from = process.env.SMTP_FROM || user;
+    let sock, stage = 'connect';
+    const log = {};
+    function step(cmd, expect, next) {
+      const onData = (chunk) => {
+        const s = chunk.toString();
+        if (/^\d+/.test(s)) {
+          sock.removeListener('data', onData);
+          if (expect && !s.startsWith(expect)) return reject(new Error('SMTP ' + stage + ': ' + s.split('\r\n')[0]));
+          next();
+        }
+      };
+      sock.on('data', onData);
+      if (cmd) sock.write(cmd + '\r\n');
+    }
+    function finish() {
+      const boundary = '--tp' + uid();
+      const msg = ['From: ' + from, 'To: ' + to, 'Subject: =?UTF-8?B?' + Buffer.from(subject, 'utf8').toString('base64') + '?=',
+        'MIME-Version: 1.0', 'Content-Type: text/plain; charset=utf-8', '',
+        text.replace(/\./g, '..'), '.'].join('\r\n');
+      step('DATA', '3', () => step(msg, '250', () => step('QUIT', null, () => { try { sock.end(); } catch (e) {} resolve(true); })));
+    }
+    function authAndMail() {
+      step('AUTH LOGIN', '334', () => step(Buffer.from(user).toString('base64'), '334', () =>
+        step(Buffer.from(pass).toString('base64'), '235', () => {
+          step('MAIL FROM:<' + from + '>', '250', () => step('RCPT TO:<' + to + '>', '250', finish));
+        }))));
+    }
+    function afterSecure() { step('EHLO teleport', null, authAndMail); }
+    function startTls() {
+      step('STARTTLS', '220', () => {
+        const secure = tls.connect({ socket: sock, servername: host, rejectUnauthorized: false }, afterSecure);
+        secure.on('error', reject); sock = secure;
+      });
+    }
+    sock = net.connect(port, host);
+    sock.setTimeout(15000, () => { try { sock.destroy(); } catch (e) {} reject(new Error('SMTP timeout')); });
+    sock.on('error', reject);
+    step(null, '220', () => {
+      if (port === 465) { // implicit TLS
+        const secure = tls.connect({ socket: sock, servername: host, rejectUnauthorized: false }, afterSecure);
+        secure.on('error', reject); sock = secure;
+      } else { step('EHLO teleport', null, startTls); }
+    });
+  });
+}
+async function deliverCode(channel, target, code) {
+  if (channel === 'sms') {
+    const provider = (process.env.SMS_PROVIDER || 'smscru').toLowerCase();
+    const text = `${code} — ваш код входа в Teleport. Никому его не передавайте!`;
+    if (provider === 'cellhippus') return sendSmsCellhippus(target, text);
+    return sendSmsSmscru(target, text);
+  }
+  return sendMail(target, 'Код входа в Teleport', `Ваш код: ${code}\nДействует 5 минут. Если вы вход не запрашивали — просто проигнорируйте письмо.`);
 }
 
 /* ---- создание аккаунта ---- */
@@ -130,15 +244,34 @@ const server = http.createServer(async (req, res) => {
       return json(res, 200, { ok: true, taken });
     }
 
-    /* телефон: запрос кода */
+    /* телефон: запрос кода (боевой: SMS-шлюз; опция EMAIL_MODE — код на почту) */
     if (req.method === 'POST' && url === '/api/code_phone') {
       const b = await readJSON(req); if (!b) return json(res, 400, { ok: false, error: 'bad json' });
       const phone = normPhone(b.phone);
       if (phone.length !== 10) return json(res, 200, { ok: false, error: 'Введите номер из 10 цифр' });
+      const last = lastSmsAt.get(phone) || 0;
+      if (Date.now() - last < 60000) return json(res, 200, { ok: false, error: 'Повторный запрос можно через 60 секунд' });
+
+      const emailMode = process.env.EMAIL_MODE === '1';
+      let channel = null, target = '7' + phone;
+      if (process.env.SMS_PROVIDER && (process.env.SMSCRU_LOGIN || process.env.CELLHIPPUS_TOKEN)) channel = 'sms';
+      else if (emailMode && process.env.SMTP_HOST) {
+        const u = db.by('users', 'phone', phone)[0];
+        if (!u || !u.email) return json(res, 200, { ok: false, error: 'Для входа по телефону нужен e-mail-код (EMAIL_MODE) или SMS-шлюз. Зарегистрируйтесь по почте.' });
+        channel = 'email'; target = u.email;
+      } else {
+        return json(res, 200, { ok: false, error: 'SMS-вход ещё не подключён: укажите SMS-шлюз в .env. Войдите по почте, VK или Яндексу.' });
+      }
       const code = issueCode('ph:' + phone);
-      // ⚠️ демо: SMS-шлюза нет — код возвращается в ответе и пишется в лог сервера.
-      console.log(`[Teleport] Код для +7${phone}: ${code}`);
-      return json(res, 200, { ok: true, demo_code: code, hint: 'SMS-шлюз не подключён — код показан сразу (демо).' });
+      lastSmsAt.set(phone, Date.now());
+      try {
+        await deliverCode(channel, target, code);
+        console.log(`[Teleport] Код для +7${phone} отправлен (${channel}).`);
+        return json(res, 200, { ok: true, sent_via: channel });
+      } catch (e) {
+        console.warn('[Teleport] Ошибка отправки кода:', e.message);
+        return json(res, 200, { ok: false, error: 'Не удалось отправить код: ' + e.message });
+      }
     }
     /* телефон: подтверждение → вход/регистрация */
     if (req.method === 'POST' && url === '/api/login_phone') {
@@ -147,10 +280,11 @@ const server = http.createServer(async (req, res) => {
       if (!checkCode('ph:' + phone, b.code)) return json(res, 200, { ok: false, error: 'Неверный или истёкший код' });
       let u = db.by('users', 'phone', phone)[0];
       if (!u) u = createUser({ name: sanitize(b.name, 32) || 'Телефон-' + phone.slice(-4), provider: 'phone', phone });
+      else if (u.phone !== phone) db.update('users', u.id, { phone }); // привязка номера к существующему аккаунту
       return json(res, 200, { ok: true, token: makeToken(u.id), user: publicUser(u) });
     }
 
-    /* e-mail: регистрация */
+    /* e-mail: регистрация (с подтверждением почты кодом, если настроена почта) */
     if (req.method === 'POST' && url === '/api/signup_email') {
       const b = await readJSON(req); if (!b) return json(res, 400, { ok: false, error: 'bad json' });
       const email = sanitize(b.email, 64).toLowerCase();
@@ -160,8 +294,39 @@ const server = http.createServer(async (req, res) => {
       const uname = normUsername(b.username || email.split('@')[0]);
       if (!uname || uname === '@') return json(res, 200, { ok: false, error: 'Придумайте @имя' });
       if (db.one('users', 'username', uname)) return json(res, 200, { ok: false, error: '@имя занято' });
+      /* боевая проверка: код на почту обязателен, если SMTP настроен */
+      if (process.env.SMTP_HOST && process.env.SMTP_USER) {
+        if (!b.code) {
+          const code = issueCode('em:' + email);
+          try { await deliverCode('email', email, code); } catch (e) {
+            return json(res, 200, { ok: false, error: 'Не удалось отправить письмо с кодом: ' + e.message });
+          }
+          return json(res, 200, { ok: false, need_code: true, error: 'Мы отправили код подтверждения на ' + email });
+        }
+        if (!checkCode('em:' + email, b.code)) return json(res, 200, { ok: false, need_code: true, error: 'Неверный или истёкший код из письма' });
+      }
       const u = createUser({ name: sanitize(b.name, 32) || email.split('@')[0], username: uname, provider: 'email', email, pass: b.password });
       return json(res, 200, { ok: true, token: makeToken(u.id), user: publicUser(u) });
+    }
+    /* сброс пароля по почте */
+    if (req.method === 'POST' && url === '/api/forgot_password') {
+      const b = await readJSON(req); if (!b) return json(res, 400, { ok: false });
+      const email = sanitize(b.email, 64).toLowerCase();
+      const u = db.where('users', 'email=?', [email])[0];
+      if (!u) return json(res, 200, { ok: false, error: 'Аккаунт с такой почтой не найден' });
+      if (!process.env.SMTP_HOST || !process.env.SMTP_USER) return json(res, 200, { ok: false, error: 'Восстановление по почте недоступно: не настроен SMTP' });
+      if (!b.code) {
+        const code = issueCode('rp:' + email);
+        try { await deliverCode('email', email, code); } catch (e) {
+          return json(res, 200, { ok: false, error: 'Не удалось отправить письмо: ' + e.message });
+        }
+        return json(res, 200, { ok: false, need_code: true, error: 'Код для смены пароля отправлен на ' + email });
+      }
+      if (!checkCode('rp:' + email, b.code)) return json(res, 200, { ok: false, need_code: true, error: 'Неверный или истёкший код' });
+      if (String(b.new_password || '').length < 6) return json(res, 200, { ok: false, error: 'Новый пароль минимум 6 символов' });
+      const salt = crypto.randomBytes(8).toString('hex');
+      db.update('users', u.id, { salt, pass_hash: hashPass(b.new_password, salt) });
+      return json(res, 200, { ok: true, token: makeToken(u.id), user: publicUser(db.get('users', u.id)) });
     }
     /* e-mail: вход */
     if (req.method === 'POST' && url === '/api/login_email') {
@@ -173,56 +338,74 @@ const server = http.createServer(async (req, res) => {
       return json(res, 200, { ok: true, token: makeToken(u.id), user: publicUser(u) });
     }
 
-    /* VK / Яндекс: ссылка авторизации */
+    /* выход: инвалидация токена */
+    if (req.method === 'POST' && url === '/api/logout') {
+      const h = req.headers.authorization || '';
+      const t = h.startsWith('Bearer ') ? h.slice(7) : '';
+      if (t && tokens[t]) { delete tokens[t]; saveTokens(); }
+      return json(res, 200, { ok: true });
+    }
+
+    /* VK / Яндекс: ссылка авторизации (боевой OAuth 2.0) */
+
+    /* VK / Яндекс: ссылка авторизации (боевой OAuth 2.0) */
     if (req.method === 'GET' && (url === '/api/oauth/vk' || url === '/api/oauth/yandex')) {
       const prov = url.endsWith('vk') ? 'vk' : 'yandex';
       const base = PUBLIC_URL || `${req.headers['x-forwarded-proto'] || 'http'}://${req.headers.host}`;
       const redir = base + OAUTH[prov].redirect;
-      if (OAUTH[prov].client_id) {
-        const loc = prov === 'vk'
-          ? `https://oauth.vk.com/authorize?client_id=${OAUTH[prov].client_id}&display=page&redirect_uri=${encodeURIComponent(redir)}&scope=email&response_type=code&v=5.199`
-          : `https://oauth.yandex.ru/authorize?response_type=code&client_id=${OAUTH[prov].client_id}&redirect_uri=${encodeURIComponent(redir)}`;
-        return json(res, 200, { ok: true, url: loc, demo: false });
+      if (!OAUTH[prov].client_id) {
+        return json(res, 200, { ok: false, error: `Вход через ${prov === 'vk' ? 'VK' : 'Яндекс'} ещё не настроен: добавьте ключи в .env`, not_configured: true });
       }
-      // демо-режим без ключей: мгновенный аккаунт провайдера
-      const u = createUser({ name: (prov === 'vk' ? 'VK' : 'Яндекс') + '-пользователь', provider: prov + '-demo' });
-      return json(res, 200, { ok: true, demo: true, token: makeToken(u.id), user: publicUser(u) });
+      const state = crypto.randomBytes(8).toString('hex');
+      try { fs.writeFileSync(path.join(ROOT, 'data', `oauth_state_${prov}.json`), JSON.stringify({ state, exp: Date.now() + 600000 })); } catch (e) {}
+      const loc = prov === 'vk'
+        ? `https://id.vk.com/authorize?response_type=code&client_id=${OAUTH[prov].client_id}&redirect_uri=${encodeURIComponent(redir)}&scope=phone,email&state=${state}`
+        : `https://oauth.yandex.ru/authorize?response_type=code&client_id=${OAUTH[prov].client_id}&redirect_uri=${encodeURIComponent(redir)}&state=${state}`;
+      return json(res, 200, { ok: true, url: loc });
     }
-    /* колбэки OAuth (если ключи заданы) */
+    /* колбэки OAuth (боевые) */
     if (req.method === 'GET' && (url === '/auth/vk/callback' || url === '/auth/yandex/callback')) {
       const prov = url.includes('/vk/') ? 'vk' : 'yandex';
       const code = q.get('code');
       if (!code || !OAUTH[prov].client_id) { res.writeHead(302, { Location: '/' }); return res.end(); }
       try {
         const base = PUBLIC_URL || `${req.headers['x-forwarded-proto'] || 'http'}://${req.headers.host}`;
-        let tokResp;
+        let tokResp, uidProvider = null;
         if (prov === 'vk') {
-          tokResp = await fetch(`https://oauth.vk.com/access_token?client_id=${OAUTH[prov].client_id}&client_secret=${process.env.VK_CLIENT_SECRET || ''}&redirect_uri=${encodeURIComponent(base + OAUTH[prov].redirect)}&code=${code}`).then(r => r.json());
+          // VK ID (OAuth 2.1): exchange по POST form + /user_info c access_token
+          tokResp = await fetchTimeout('https://id.vk.com/auth/oauth/token', {
+            method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+            body: new URLSearchParams({ grant_type: 'authorization_code', code, client_id: OAUTH[prov].client_id, redirect_uri: base + OAUTH[prov].redirect }).toString(),
+          }).then(r => r.json());
+          const at = tokResp.access_token; if (!at) throw new Error('VK: нет access_token');
+          const vi = await fetchTimeout('https://api.vk.com/method/account.getInfo?fields=first_name,last_name,photo_200&v=5.199&access_token=' + at).then(r => r.json());
+          const j = (vi.response && vi.response[0]) || {};
+          uidProvider = String(vi.user_id || j.user_id || '');
+          var name = [j.first_name, j.last_name].filter(Boolean).join(' ') || 'Пользователь VK';
+          var email = j.email || null, avatar = j.photo_200 || null;
         } else {
-          tokResp = await fetch('https://oauth.yandex.ru/token', { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams({ grant_type: 'authorization_code', code, client_id: OAUTH[prov].client_id, client_secret: process.env.YANDEX_CLIENT_SECRET || '' }) }).then(r => r.json());
+          tokResp = await fetchTimeout('https://oauth.yandex.ru/token', {
+            method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+            body: new URLSearchParams({ grant_type: 'authorization_code', code, client_id: OAUTH[prov].client_id, client_secret: OAUTH[prov].secret }),
+          }).then(r => r.json());
+          const at = tokResp.access_token; if (!at) throw new Error('Яндекс: нет access_token');
+          const prof = await fetchTimeout('https://login.yandex.ru/info?format=json', { headers: { Authorization: 'OAuth ' + at } }).then(r => r.json());
+          uidProvider = String(prof.id || '');
+          var name = prof.display_name || prof.real_domain || 'Пользователь Яндекс';
+          var email = prof.default_email || null;
+          var avatar = prof.default_avatar ? `https://avatars.yandex.net/get-yapic/${prof.default_avatar}/islands-200` : null;
         }
-        const at = tokResp.access_token;
-        if (!at) throw new Error('нет access_token');
-        let prof, name, email = null, avatar = null;
-        if (prov === 'vk') {
-          const j = await fetch(`https://api.vk.com/method/users.get?user_ids=${tokResp.user_id}&fields=photo_200&v=5.199&access_token=${at}`).then(r => r.json());
-          prof = j.response && j.response[0];
-          name = prof ? prof.first_name + ' ' + (prof.last_name || '') : 'VK-пользователь';
-          email = tokResp.email || null; avatar = prof && prof.photo_200 || null;
-        } else {
-          prof = await fetch('https://login.yandex.ru/info?format=json', { headers: { Authorization: 'OAuth ' + at } }).then(r => r.json());
-          name = prof.display_name || prof.real_domain || 'Яндекс-пользователь';
-          email = prof.default_email || null;
-          avatar = prof.default_avatar ? `https://avatars.yandex.net/get-yapic/${prof.default_avatar}/islands-200` : null;
-        }
-        const exId = String(prof && (prof.id || prof.uid) || uid());
-        let u = db.where('users', 'provider=?', [prov]).find(x => x.id === 'x_' + exId) ||
+        if (!uidProvider) throw new Error('не удалось определить id пользователя');
+        let u = db.where('users', 'provider=?', [prov]).find(x => x.ext_id === uidProvider) ||
                 (email && db.where('users', 'email=?', [email])[0]);
-        if (!u) u = createUser({ name: String(name).trim(), username: normUsername(String(name).replace(/\s+/g, '_')), provider: prov, email, avatar });
-        else db.update('users', u.id, { name: String(name).trim() || u.name, avatar: avatar || u.avatar });
+        if (!u) {
+          u = createUser({ name: String(name).trim(), username: normUsername(String(name).replace(/\s+/g, '_')), provider: prov, email, avatar });
+          db.update('users', u.id, { ext_id: uidProvider });
+        } else db.update('users', u.id, { name: String(name).trim() || u.name, avatar: avatar || u.avatar, ext_id: uidProvider });
         res.writeHead(302, { Location: '/#token=' + makeToken(u.id) });
         res.end();
       } catch (e) {
+        console.warn('[Teleport] OAuth error:', e.message);
         res.writeHead(302, { Location: '/?auth_error=' + encodeURIComponent(e.message) }); res.end();
       }
       return;
@@ -264,21 +447,23 @@ const server = http.createServer(async (req, res) => {
       return json(res, 200, { ok: true, users: all });
     }
 
-    /* загрузка медиа (фото, файлы, голосовые) */
+    /* загрузка медиа (фото, файлы, голосовые, видеокружки) */
     if (req.method === 'POST' && url === '/upload') {
       const ct = (req.headers['content-type'] || '').split(';')[0];
       const IMG_EXT = ['.jpg', '.png', '.webp', '.gif'];
+      const VIDEO_EXT = ['.webm', '.mp4', '.mov', '.m4v'];
       const AUDIO_EXT = { 'audio/ogg': '.ogg', 'audio/webm': '.webm', 'audio/mp4': '.m4a', 'audio/mpeg': '.mp3', 'audio/wav': '.wav', 'audio/x-wav': '.wav' };
+      const VIDEO_CT  = { 'video/webm': '.webm', 'video/mp4': '.mp4', 'video/quicktime': '.mov' };
       try {
-        let buf = await readBody(req, 8 * 1024 * 1024);
-        let ext = IMG_EXT.includes(q.get('ext') || '') ? q.get('ext') : null; // явный hint от клиента
+        let buf = await readBody(req, 16 * 1024 * 1024); // до 16 МБ — видео/файлы
+        let ext = [...IMG_EXT, ...VIDEO_EXT].includes(q.get('ext') || '') ? q.get('ext') : null; // явный hint от клиента
         if (!ext && ct === 'multipart/form-data') {
-          const m = /filename="[^"]*\.(jpe?g|png|webp|gif|ogg|webm|m4a|mp3|wav)"/i.exec(buf.toString('latin1').slice(0, 2048));
+          const m = /filename="[^"]*\.(jpe?g|png|webp|gif|ogg|webm|m4a|mp3|wav|mp4|mov)"/i.exec(buf.toString('latin1').slice(0, 2048));
           ext = m ? '.' + m[1].toLowerCase().replace('jpeg', 'jpg') : '.jpg';
           const idx = buf.indexOf('\r\n\r\n'); if (idx >= 0) buf = buf.slice(idx + 4);
           const tail = buf.lastIndexOf('\r\n--'); if (tail > 0) buf = buf.slice(0, tail);
         }
-        if (!ext) ext = AUDIO_EXT[ct] || IMG_EXT.find(e => e === '.' + ((q.get('name') || '').match(/\.(\w+)$/) || [])[1]?.toLowerCase()) || '.bin';
+        if (!ext) ext = AUDIO_EXT[ct] || VIDEO_CT[ct] || IMG_EXT.find(e => e === '.' + ((q.get('name') || '').match(/\.(\w+)$/) || [])[1]?.toLowerCase()) || '.bin';
         const name = Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 8) + ext;
         fs.writeFileSync(path.join(MEDIA_DIR, name), buf);
         return json(res, 200, { ok: true, url: '/uploads/' + name });
@@ -318,6 +503,7 @@ const wss = new WebSocketServer({ server, path: '/ws' });
 
 const byUser = new Map();       // userId -> Set<ws>
 const rooms = new Map();        // chatId -> Set<ws>
+const seenMsgs = new Set();     // дедупликация: mid уже принят (защита от ретраев клиента)
 
 function send(ws, obj) { try { if (ws.readyState === 1) ws.send(JSON.stringify(obj)); } catch (e) {} }
 function toChat(chatId, obj, exceptWs) {
@@ -419,11 +605,14 @@ wss.on('connection', (ws, req) => {
       case 'msg': { // { t:'msg', chatId, mid, text, mediaUrl, ts, replyTo, fwdFrom }
         if (!me) return;
         const chatId = String(m.chatId || '').slice(0, 80);
+        const mid = String(m.mid || uid()).slice(0, 32);
+        if (seenMsgs.has(mid)) return;            // дедупликация повторов клиента
+        seenMsgs.add(mid); if (seenMsgs.size > 5000) seenMsgs.clear();
         const clip = (v) => typeof v === 'string' ? v.slice(0, 200) : null;
         const payload = {
           t: 'msg', chatId,
           from: sanitize(me.name, 32), fromId: me.id,
-          mid: String(m.mid || uid()).slice(0, 32),
+          mid,
           text: String(m.text || '').slice(0, 4000),
           mediaUrl: clip(m.mediaUrl), fileUrl: clip(m.fileUrl), fileName: clip(m.fileName),
           audioUrl: clip(m.audioUrl), audioDur: Number(m.audioDur) || null,
@@ -457,9 +646,10 @@ wss.on('connection', (ws, req) => {
         break;
       }
 
-      case 'read': { // { t:'read', chatId }
+      case 'read': { // { t:'read', chatId } — отправляем владельцу сообщений (me читает чужие)
         if (!me) return;
-        toChat(String(m.chatId), { t: 'read', by: me.id, byName: me.name }, ws);
+        const set = rooms.get(String(m.chatId)); if (!set) return;
+        for (const peer of set) if (peer._user && peer._user.id !== me.id) send(peer, { t: 'read', by: me.id, byName: me.name });
         break;
       }
       case 'typing': { // { t:'typing', chatId, on }
@@ -475,6 +665,9 @@ wss.on('connection', (ws, req) => {
         if (!target) return;
         const map = { call: 'call-incoming', 'call-accept': 'call-accepted', 'call-decline': 'call-declined', 'call-end': 'call-ended', signal: 'signal' };
         toUser(target, { t: map[m.t], from: publicUser(me), chatId: m.chatId || null, kind: m.kind || null, data: m.data || null });
+        if (m.t === 'call') { // параллельно — всем остальным устройствам звонящего, чтобы закрыть «исходящий» на них
+          for (const s of byUser.get(me.id) || []) if (s !== ws) send(s, { t: 'call-self', to: target, kind: m.kind || 'audio' });
+        }
         break;
       }
     }
@@ -511,6 +704,8 @@ server.listen(PORT, () => {
   console.log(`✅ Teleport PRO запущен: http://localhost:${PORT}`);
   console.log(`   База данных: ${db.engine}`);
   console.log(`   WebSocket: ws://localhost:${PORT}/ws`);
-  if (!OAUTH.vk.client_id) console.log('   VK OAuth: демо-режим (задайте VK_CLIENT_ID/VK_CLIENT_SECRET для боевого)');
-  if (!OAUTH.yandex.client_id) console.log('   Яндекс OAuth: демо-режим (задайте YANDEX_CLIENT_ID/YANDEX_CLIENT_SECRET для боевого)');
+  if (!OAUTH.vk.client_id) console.log('   ⚠️ VK OAuth не настроен — добавьте VK_CLIENT_ID/VK_CLIENT_SECRET в .env');
+  if (!OAUTH.yandex.client_id) console.log('   ⚠️ Яндекс OAuth не настроен — добавьте YANDEX_CLIENT_ID/YANDEX_CLIENT_SECRET в .env');
+  if (!(process.env.SMS_PROVIDER && (process.env.SMSCRU_LOGIN || process.env.CELLHIPPUS_TOKEN)) && process.env.EMAIL_MODE !== '1')
+    console.log('   ⚠️ SMS/код по телефону выключен: подключите SMS-шлюз или EMAIL_MODE=1 + SMTP_* в .env');
 });
