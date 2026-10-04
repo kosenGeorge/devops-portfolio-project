@@ -37,6 +37,7 @@
     bindModals();
     bindMsgSearch();
     bindGlobalKeys();
+    bindResize();
     renderChatList();
 
     Bot.scheduleAmbient(
@@ -52,6 +53,14 @@
 
     registerSW();
     updateDrawerCounts();
+    handleHashRoute();
+    window.addEventListener('hashchange', handleHashRoute);
+  }
+
+  function handleHashRoute() {
+    const h = location.hash.replace(/^#/, '');
+    if (h === 'saved') { setTimeout(() => showStarred(), 200); history.replaceState(null, '', location.pathname + location.search); }
+    else if (h.startsWith('c_')) { setTimeout(() => openChat(h), 150); }
   }
 
   /* ==================== LOGIN ==================== */
@@ -64,6 +73,22 @@
     };
     $('#loginBtn').addEventListener('click', go);
     $('#loginName').addEventListener('keydown', e => { if (e.key === 'Enter') go(); });
+
+    // кнопка «Установить как приложение» (Android Chrome / Desktop)
+    let deferredPrompt = null;
+    window.addEventListener('beforeinstallprompt', (e) => {
+      e.preventDefault();
+      deferredPrompt = e;
+      $('#installBtn').classList.remove('hidden');
+    });
+    $('#installBtn').addEventListener('click', async () => {
+      if (!deferredPrompt) return;
+      deferredPrompt.prompt();
+      await deferredPrompt.userChoice;
+      deferredPrompt = null;
+      $('#installBtn').classList.add('hidden');
+    });
+    window.addEventListener('appinstalled', () => $('#installBtn').classList.add('hidden'));
   }
 
   function showApp() {
@@ -371,6 +396,7 @@
       }));
       if (m.from === 'me') acts.appendChild(iconAct('✏️', 'Изменить', () => startEdit(m)));
       acts.appendChild(iconAct('↩️', 'Ответить', () => setReply(m, c)));
+      acts.appendChild(iconAct('➡️', 'Переслать', () => forwardMessage(c, m)));
       acts.appendChild(iconAct('🗑', 'Удалить', () => {
         Store.deleteMessage(c.id, m.id); renderMessages(c); renderChatList($('#searchInput').value);
       }));
@@ -916,7 +942,7 @@
       return d;
     }
     const d = el('div', cls, esc(U.firstLetter(me.name || 'Я')));
-    d.style.background = 'var(--tg-blue)';
+    d.style.background = 'var(--accent)';
     return d;
   }
 
@@ -1009,7 +1035,7 @@
         const obj = JSON.parse(fr.result);
         if (!obj || obj.app !== 'teleport' || !Array.isArray(obj.data?.chats)) throw new Error('bad format');
         confirmModal('Заменить текущие данные из файла? Чатов: ' + obj.data.chats.length, () => {
-          localStorage.setItem('teleport_data_v2', JSON.stringify(Object.assign({}, obj.data)));
+          localStorage.setItem('teleport_data_v3', JSON.stringify(Object.assign({}, obj.data)));
           location.reload();
         });
       } catch (err) {
@@ -1097,6 +1123,25 @@
 
   function registerSW() {
     if ('serviceWorker' in navigator) navigator.serviceWorker.register('./sw.js').catch(() => {});
+  }
+
+  /* ==================== ADAPTIVE LAYOUT (Android / iOS / PC) ==================== */
+  // Считаем боковой отступ для центрирования ленты на широких экранах и в «оконном» режиме.
+  function bindResize() {
+    const update = () => {
+      const w = window.innerWidth;
+      let pad = 0;
+      if (w >= 1800) {                       // режим «окна»: контент центрируется внутри окна 1600px
+        const chatW = Math.min(1600, w) - 380;
+        pad = Math.max(0, (chatW - 940) / 2);
+      } else if (w >= 1400) {                // обычный широкий десктоп
+        pad = Math.max(0, (w - 380 - 1060) / 2);
+      }
+      document.documentElement.style.setProperty('--center-pad', Math.round(pad) + 'px');
+    };
+    window.addEventListener('resize', update);
+    window.addEventListener('orientationchange', update);
+    update();
   }
 
   document.addEventListener('DOMContentLoaded', init);

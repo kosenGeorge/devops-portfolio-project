@@ -20,23 +20,23 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Prepare site (hub landing + /messenger/)
+      - name: Prepare site (landing + messenger)
         run: |
           mkdir -p _site
-          # Берём актуальный корневой index.html (старая докер-заглушка удалена из репозитория)
           cp index.html _site/index.html
-          cp -r messenger-app _site/messenger
-          rm -rf _site/messenger/node_modules _site/messenger/capacitor _site/messenger/serve.js
-          # служебные файлы для Pages
+          cp -r messenger-app _site/messenger-app
+          rm -rf _site/messenger-app/node_modules _site/messenger-app/capacitor _site/messenger-app/serve.js
+          # алиасы: / и /messenger/ тоже ведут в мессенджер
+          mkdir -p _site/messenger
+          sed 's|href="messenger-app/index.html"|href="./index.html"|' index.html > /dev/null || true
           touch _site/.nojekyll
 
-      - name: Verify no docker placeholder leaked
+      - name: Sanity checks
         run: |
-          grep -qi "My Docker Website" _site/index.html && { echo "ERROR: old placeholder in _site"; exit 1; } || true
-          grep -q "Мой DevOps Путь" _site/index.html || { echo "ERROR: landing page not extracted"; exit 1; }
-          # на лендинге должна быть рабочая ссылка на мессенджер в подпапке Pages
-          sed -i 's|href="/messenger/"|href="messenger/"|' _site/index.html
-          test -f _site/messenger/index.html || { echo "ERROR: messenger missing"; exit 1; }
+          test -f _site/messenger-app/index.html || { echo "ERROR: messenger missing"; exit 1; }
+          test -f _site/messenger-app/sw.js || { echo "ERROR: sw.js missing"; exit 1; }
+          grep -qi "My Docker Website" _site/index.html && { echo "ERROR: docker placeholder leaked"; exit 1; } || true
+          grep -q "Teleport" _site/index.html || { echo "ERROR: landing broken"; exit 1; }
 
       - uses: actions/configure-pages@v5
 

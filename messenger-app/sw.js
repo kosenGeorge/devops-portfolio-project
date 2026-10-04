@@ -1,5 +1,5 @@
 /* ============ sw.js — Service Worker (офлайн-кэш) ============ */
-const CACHE = 'teleport-v3';
+const CACHE = 'teleport-v4';
 const ASSETS = [
   './',
   './index.html',

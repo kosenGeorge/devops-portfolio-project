@@ -3,7 +3,9 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
-  <meta name="theme-color" content="#0088cc" />
+  <meta name="theme-color" content="#2f6fed" media="(prefers-color-scheme: light)" />
+  <meta name="theme-color" content="#12151b" media="(prefers-color-scheme: dark)" />
+  <meta name="theme-color" content="#2f6fed" />
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
@@ -26,6 +28,7 @@
     <p class="login-sub">Быстрый и приватный мессенджер</p>
     <input id="loginName" type="text" maxlength="32" placeholder="Ваше имя" autocomplete="off" />
     <button id="loginBtn" class="btn-primary">Начать чат</button>
+    <button id="installBtn" class="btn-ghost hidden"><i class="bi bi-box-arrow-down"></i> Установить как приложение</button>
     <p class="login-hint">Данные хранятся только на вашем устройстве (localStorage)</p>
   </div>
 </div>
