@@ -48,6 +48,7 @@
     bindGlobalKeys();
     bindResize();
     bindCallsUI();
+    bindRipple();
     renderChatList();
 
     Net.handlers.onConn = (on) => { updateLiveBadge(on); if (currentChatId) refreshHeader(); };
@@ -252,6 +253,9 @@
       id: d.mid, from: mine ? 'me' : 'peer', senderName: d.from, text: d.text || '',
       ts: d.ts || Date.now(), status: mine ? 'read' : null,
       media: null, mediaUrl: d.mediaUrl || null,
+      fileUrl: d.fileUrl || null, fileName: d.fileName || null,
+      audioUrl: d.audioUrl || null, audioDur: d.audioDur || null, geo: d.geo || null,
+      circleUrl: d.circleUrl || null, poster: d.poster || null, dur: d.dur || null,
       replyTo: d.replyTo || null, forwardedFrom: d.fwdFrom || null,
       edited: !!d.edited, deleted: !!d.deleted, starred: false,
     };
@@ -282,6 +286,9 @@
         c.messages.push({
           id: sm.mid, from: mine ? 'me' : 'peer', senderName: undefined, text: sm.text || '',
           ts: sm.ts, status: mine ? 'read' : null, media: null, mediaUrl: sm.mediaUrl || null,
+          fileUrl: sm.fileUrl || null, fileName: sm.fileName || null,
+          audioUrl: sm.audioUrl || null, audioDur: sm.audioDur || null, geo: sm.geo || null,
+          circleUrl: sm.circleUrl || null, poster: sm.poster || null, dur: sm.dur || null,
           replyTo: sm.replyTo, forwardedFrom: sm.fwdFrom, edited: !!sm.edited, deleted: !!sm.deleted, starred: false,
         });
       }
@@ -578,6 +585,7 @@
   /* ==================== MESSAGES ==================== */
   function renderMessages(c) {
     const box = $('#messages');
+    box.classList.remove('chat-enter'); void box.offsetWidth; box.classList.add('chat-enter');
     box.innerHTML = '';
     let lastDate = '';
     for (const m of c.messages) {
@@ -1418,7 +1426,10 @@
     wpFile.onchange = async () => {
       const f = wpFile.files[0]; if (!f) return;
       try {
-        const url = await fileToDataUrl(f, 1400);   // сжатие до разумного размера
+        const url = await new Promise((res, rej) => {   // сжатие до разумного размера
+          const r = new FileReader();
+          r.onload = () => res(r.result); r.onerror = rej; r.readAsDataURL(f);
+        });
         Store.setCustomWp(url); applyWallpaper('custom');
         toast('Обои установлены ✨');
         const opt = [...wpSel.options].find(o => o.value === 'custom');
@@ -1848,6 +1859,25 @@
       await deferred.userChoice;
       deferred = null; $('#installBtn').classList.add('hidden');
     });
+  }
+
+  /* ripple-эффект Material You: делегирование по document */
+  function bindRipple() {
+    const SEL = 'button:not(.no-ripple):not(.co-rec):not(.co-send), .chat-item, .attach-opt';
+    document.addEventListener('pointerdown', (e) => {
+      const t = e.target.closest && e.target.closest(SEL);
+      if (!t || !t.isConnected) return;
+      if (getComputedStyle(t).position === 'static') t.classList.add('ripple-host');
+      else if (!t.classList.contains('ripple-host') && getComputedStyle(t).overflow !== 'hidden') return;
+      const r = t.getBoundingClientRect();
+      const size = Math.max(r.width, r.height) * 1.15;
+      const sp = el('span', 'ripple');
+      sp.style.width = sp.style.height = size + 'px';
+      sp.style.left = (e.clientX - r.left - size / 2) + 'px';
+      sp.style.top = (e.clientY - r.top - size / 2) + 'px';
+      t.appendChild(sp);
+      setTimeout(() => sp.remove(), 600);
+    }, { passive: true });
   }
 
   function bindResize() {
