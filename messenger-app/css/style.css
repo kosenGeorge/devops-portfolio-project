@@ -1104,3 +1104,177 @@ html.theming *, html.theming *::before, html.theming *::after { transition: back
 
 /* свайп-открытие чата: тень у левого края при жесте */
 #chatView.swiping { transition: none; }
+
+/* ==================== v8: видеокружки, оверлей камеры, спиннер, ripple ==================== */
+
+/* --- пузырёк видеосообщения в ленте --- */
+.circle-msg {
+  position: relative; width: 108px; height: 108px; border-radius: 50%; overflow: hidden;
+  background: #10131a; box-shadow: 0 4px 16px rgba(0,0,0,.28); cursor: pointer; flex: none;
+}
+.circle-msg.out { margin-left: auto; }
+.circle-msg img.cm-poster, .circle-msg video.cm-video {
+  position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; display: block;
+}
+.circle-msg .cm-placeholder {
+  position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+  color: rgba(255,255,255,.55); font-size: 26px;
+  background: linear-gradient(135deg, #23283a, #171b28);
+}
+.circle-msg .cm-play {
+  position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+  color: #fff; font-size: 30px; text-shadow: 0 2px 10px rgba(0,0,0,.6);
+  transition: opacity .18s ease; z-index: 3; pointer-events: none;
+}
+.circle-msg.playing .cm-play { opacity: 0; }
+.circle-msg .cm-ring { position: absolute; inset: -3px; z-index: 2; pointer-events: none; animation: cmSpin 9s linear infinite; }
+.circle-msg .cm-ring i {
+  position: absolute; left: 50%; top: 0; width: 3px; height: 9px; margin-left: -1.5px;
+  border-radius: 2px; background: var(--accent); transform-origin: 1.5px 57px; opacity: .9;
+}
+@keyframes cmSpin { to { transform: rotate(360deg); } }
+.circle-msg .cm-dur {
+  position: absolute; right: -2px; bottom: -2px; z-index: 4;
+  background: rgba(10,12,18,.72); color: #fff; font-size: 10px; font-weight: 700;
+  padding: 2px 7px; border-radius: 10px; backdrop-filter: blur(4px);
+}
+.circle-msg.unseen::after {
+  content: ''; position: absolute; inset: -4px; border-radius: 50%;
+  border: 2.5px solid var(--accent); animation: vcHint 1.6s ease-in-out infinite; z-index: 4; pointer-events: none;
+}
+@keyframes vcHint { 0%,100% { opacity: .35; transform: scale(.97);} 50% { opacity: 1; transform: scale(1);} }
+
+/* --- полноэкранный оверлей записи кружка --- */
+.circle-overlay {
+  position: fixed; inset: 0; z-index: 480; background: #05070c;
+  display: flex; align-items: center; justify-content: center;
+  opacity: 0; transition: opacity .22s ease;
+}
+.circle-overlay.show { opacity: 1; }
+.co-video {
+  width: min(88vw, calc(100vh - 200px)); aspect-ratio: 1/1; border-radius: 50%;
+  object-fit: cover; background: #10131a;
+  box-shadow: 0 0 0 1px rgba(255,255,255,.06), 0 24px 80px rgba(0,0,0,.6);
+}
+.co-ring { position: absolute; top: 50%; left: 50%; width: calc(min(88vw, calc(100vh - 200px)) + 16px); aspect-ratio: 1/1; transform: translate(-50%,-50%); pointer-events: none; }
+.co-ring svg { width: 100%; height: 100%; transform: rotate(-90deg); }
+.co-track { fill: none; stroke: rgba(255,255,255,.14); stroke-width: 3; }
+.co-prog { fill: none; stroke: var(--accent); stroke-width: 3.5; stroke-linecap: round; transition: stroke-dashoffset .3s linear; }
+.co-time {
+  position: absolute; top: max(22px, env(safe-area-inset-top)); left: 50%; transform: translateX(-50%);
+  color: #fff; font-weight: 700; font-size: 15px; letter-spacing: .5px;
+  background: rgba(255,255,255,.12); padding: 6px 14px; border-radius: 14px; backdrop-filter: blur(8px);
+}
+.co-flip, .co-cancel, .co-rec, .co-send {
+  position: absolute; border: none; cursor: pointer; display: flex; align-items: center; justify-content: center;
+  transition: transform .12s ease, opacity .2s ease; -webkit-tap-highlight-color: transparent;
+}
+.co-flip:active, .co-cancel:active, .co-rec:active, .co-send:active { transform: scale(.88); }
+.co-flip { bottom: calc(34px + env(safe-area-inset-bottom)); right: clamp(18px, 8vw, 60px); width: 52px; height: 52px; border-radius: 50%; background: rgba(255,255,255,.14); color: #fff; font-size: 20px; }
+.co-cancel { bottom: calc(34px + env(safe-area-inset-bottom)); left: clamp(18px, 8vw, 60px); width: 52px; height: 52px; border-radius: 50%; background: rgba(255,255,255,.14); color: #fff; font-size: 18px; }
+.co-rec {
+  bottom: calc(26px + env(safe-area-inset-bottom)); left: 50%; transform: translateX(-50%);
+  width: 74px; height: 74px; border-radius: 50%; background: transparent; border: 4px solid #fff;
+}
+.co-rec::after { content: ''; width: 56px; height: 56px; border-radius: 50%; background: var(--red, #e5484d); transition: all .25s cubic-bezier(.2,1.2,.4,1); }
+.co-rec.recording::after { width: 26px; height: 26px; border-radius: 7px; }
+.co-rec:active { transform: translateX(-50%) scale(.92); }
+.co-send {
+  bottom: calc(26px + env(safe-area-inset-bottom)); left: 50%; transform: translateX(-50%);
+  width: 74px; height: 74px; border-radius: 50%; background: var(--accent-grad); color: #fff; font-size: 30px;
+  box-shadow: 0 10px 30px rgba(0,0,0,.4);
+}
+.co-send.hidden, .co-rec.hidden { display: none; }
+.circle-overlay .hidden { display: none; }
+
+/* --- спиннер загрузки --- */
+.spinner {
+  display: inline-block; width: 18px; height: 18px; border-radius: 50%; vertical-align: middle;
+  border: 2.5px solid rgba(255,255,255,.3); border-top-color: #fff; animation: spin .7s linear infinite;
+}
+.msg .spinner { border-color: rgba(0,0,0,.15); border-top-color: var(--accent); }
+@keyframes spin { to { transform: rotate(360deg); } }
+
+/* --- точки палитры Material You в настройках --- */
+.pal-row { display: flex; gap: 10px; flex-wrap: wrap; }
+.pal-dot {
+  width: 34px; height: 34px; border-radius: 50%; border: 2px solid transparent; cursor: pointer;
+  transition: transform .15s cubic-bezier(.2,1.4,.4,1), box-shadow .15s ease; position: relative;
+  -webkit-tap-highlight-color: transparent;
+}
+.pal-dot:active { transform: scale(.85); }
+.pal-dot.active { transform: scale(1.08); box-shadow: 0 0 0 2.5px var(--panel-solid, #fff), 0 0 0 4.5px currentColor; }
+.pal-dot.active::after {
+  content: '✓'; position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+  color: #fff; font-size: 15px; font-weight: 800; text-shadow: 0 1px 3px rgba(0,0,0,.4);
+}
+.pal-blue   { background: linear-gradient(135deg,#2f6fed,#7c5cff); color:#2f6fed; }
+.pal-violet { background: linear-gradient(135deg,#7c5cff,#b44af0); color:#7c5cff; }
+.pal-pink   { background: linear-gradient(135deg,#e0457b,#f4623a); color:#e0457b; }
+.pal-orange { background: linear-gradient(135deg,#f4763a,#f0a13a); color:#f4763a; }
+.pal-green  { background: linear-gradient(135deg,#14a56a,#0fb89a); color:#14a56a; }
+.pal-teal   { background: linear-gradient(135deg,#0ea5a4,#21c0a8); color:#0ea5a4; }
+.pal-cyan   { background: linear-gradient(135deg,#0e8fd6,#38bdf8); color:#0e8fd6; }
+.pal-slate  { background: linear-gradient(135deg,#5b6cff,#8f7bff); color:#5b6cff; }
+
+/* --- строка загрузки своих обоев + затемнение --- */
+.wp-upload-row { display: flex; align-items: center; gap: 12px; padding: 4px 0; }
+.wp-tint-row { display: flex; align-items: center; gap: 12px; }
+input[type="range"].wp-range {
+  -webkit-appearance: none; appearance: none; flex: 1; height: 5px; border-radius: 4px;
+  background: linear-gradient(90deg, var(--accent) var(--fill, 40%), rgba(128,138,155,.28) var(--fill, 40%));
+  outline: none;
+}
+input[type="range"].wp-range::-webkit-slider-thumb {
+  -webkit-appearance: none; width: 22px; height: 22px; border-radius: 50%;
+  background: var(--accent); border: 3px solid #fff; box-shadow: 0 2px 8px rgba(0,0,0,.25); cursor: grab;
+  transition: transform .12s ease;
+}
+input[type="range"].wp-range::-webkit-slider-thumb:active { transform: scale(1.15); cursor: grabbing; }
+input[type="range"].wp-range::-moz-range-thumb {
+  width: 18px; height: 18px; border-radius: 50%; background: var(--accent); border: 3px solid #fff; cursor: grab;
+}
+
+/* --- адаптация пользовательских обоев: читаемость сообщений --- */
+.messages.is-tinted { background-size: cover; background-position: center; background-repeat: no-repeat; }
+.messages.is-tinted > * { position: relative; z-index: 1; }
+.messages.is-tinted .msg .bubble:not(.out) {
+  background: color-mix(in srgb, var(--panel-solid, #fff) calc(58% + var(--wp-tint, .38) * 60%), transparent);
+  backdrop-filter: blur(10px) saturate(1.1);
+  -webkit-backdrop-filter: blur(10px) saturate(1.1);
+  box-shadow: 0 2px 12px rgba(0,0,0, calc(var(--wp-tint, .38) * .35));
+}
+.messages.is-tinted .msg .bubble.out {
+  background: color-mix(in srgb, var(--accent) calc(72% + var(--wp-tint, .38) * 28%), #0a0d14);
+  box-shadow: 0 2px 14px rgba(0,0,0, calc(var(--wp-tint, .38) * .4));
+}
+.messages.is-tinted .day-divider span {
+  background: rgba(10,13,20,.5); color: #fff; backdrop-filter: blur(8px);
+}
+.messages.is-tinted .typing-indicator { background: rgba(10,13,20,.45); color: #fff; backdrop-filter: blur(8px); }
+/* фолбэк для браузеров без color-mix */
+@supports not (color: color-mix(in srgb, red 50%, blue)) {
+  .messages.is-tinted .msg .bubble:not(.out) { background: rgba(255,255,255,.88); }
+  .messages.is-tinted .msg .bubble.out { background: var(--accent); }
+  html[data-theme="dark"] .messages.is-tinted .msg .bubble:not(.out) { background: rgba(30,34,45,.88); }
+}
+
+/* --- ripple на кнопках (навешивается JS-делегированием) --- */
+button:not(.no-ripple), .chat-item, .attach-opt, .emoji-btn { -webkit-tap-highlight-color: transparent; }
+.chat-item { position: relative; overflow: hidden; }
+.attach-opt { position: relative; overflow: hidden; }
+
+/* --- бодрее: hover-lift на чатах и кнопках вложений --- */
+@media (hover:hover) {
+  .chat-item:hover { transform: translateY(-1px); }
+  .attach-opt:hover { transform: translateY(-3px) scale(1.04); }
+  .pal-dot:hover { transform: scale(1.12); }
+}
+
+/* --- появление ленты при смене чата: мягкий «разворот» --- */
+#messages.chat-enter { animation: chatReveal .34s cubic-bezier(.22,1,.36,1); }
+@keyframes chatReveal { from { opacity: 0; transform: translateY(14px) scale(.985); } to { opacity: 1; transform: none; } }
+
+/* --- сообщение при редактировании подсвечивается --- */
+.msg.flash .bubble { animation: msgFlash 1.1s ease; }
+@keyframes msgFlash { 0% { box-shadow: 0 0 0 2px var(--accent); } 100% { box-shadow: 0 1px 4px rgba(0,0,0,.1); } }
