@@ -19,6 +19,7 @@ CREATE TABLE IF NOT EXISTS users (
   email TEXT, phone TEXT,
   avatar TEXT, bio TEXT DEFAULT '',
   pass_hash TEXT, salt TEXT,
+  ext_id TEXT,
   created_at INTEGER
 );
 CREATE TABLE IF NOT EXISTS contacts (
@@ -41,6 +42,14 @@ CREATE TABLE IF NOT EXISTS messages (
 CREATE INDEX IF NOT EXISTS idx_msg_chat ON messages(chat_id, ts);
 `;
 
+/* мягкая миграция: добавляем отсутствующие колонки в существующих базах */
+function migrate(run, all) {
+  try {
+    const cols = all('PRAGMA table_info(users)').map(r => r.name);
+    if (!cols.includes('ext_id')) run('ALTER TABLE users ADD COLUMN ext_id TEXT');
+  } catch (e) {}
+}
+
 function open() {
   /* ---------- вариант 1: встроенный node:sqlite ---------- */
   try {
@@ -48,7 +57,7 @@ function open() {
     const db = new DatabaseSync(path.join(DATA_DIR, 'teleport.db'));
     db.exec(SCHEMA);
     return wrapSqlite((sql, params = []) => db.prepare(sql).all(...params),
-                     (sql, params = []) => db.prepare(sql).run(...params), 'node:sqlite');
+                     (sql, params = []) => db.prepare(sql).run(...params), 'node:sqlite', migrate);
   } catch (e) { /* нет — пробуем дальше */ }
 
   /* ---------- вариант 2: better-sqlite3 ---------- */
@@ -58,14 +67,15 @@ function open() {
     db.pragma('journal_mode = WAL');
     db.exec(SCHEMA);
     return wrapSqlite((sql, params = []) => db.prepare(sql).all(...params),
-                      (sql, params = []) => db.prepare(sql).run(...params), 'better-sqlite3');
+                      (sql, params = []) => db.prepare(sql).run(...params), 'better-sqlite3', migrate);
   } catch (e) { /* нет — фолбэк */ }
 
   /* ---------- вариант 3: JSON-файл ---------- */
   return openJson();
 }
 
-function wrapSqlite(all, run, engine) {
+function wrapSqlite(all, run, engine, migrate) {
+  if (migrate) try { migrate(run, all); } catch (e) {}
   return {
     engine,
     get(table, id) { const rows = all(`SELECT * FROM ${table} WHERE id=?`, [id]); return rows[0] || null; },
