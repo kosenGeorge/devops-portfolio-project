@@ -35,8 +35,11 @@ const { db } = require('./db.js');
 })();
 
 const ROOT = __dirname;
+/* В облаке (Yandex Cloud Functions / Serverless Containers) порт приходит в переменной PORT. */
 const PORT = process.env.PORT || 8080;
-const MEDIA_DIR = path.join(ROOT, 'uploads');
+/* Каталог загрузок: локально ./uploads; в облаке с сетевым диском — TELEPORT_DATA_DIR/uploads */
+const DATA_ROOT = process.env.TELEPORT_DATA_DIR || ROOT;
+const MEDIA_DIR = process.env.TELEPORT_DATA_DIR ? path.join(process.env.TELEPORT_DATA_DIR, 'uploads') : path.join(ROOT, 'uploads');
 try { fs.mkdirSync(MEDIA_DIR, { recursive: true }); } catch (e) {}
 
 /* ---- конфигурация OAuth (боевая, из .env) ---- */
@@ -81,7 +84,7 @@ function normPhone(p) { const d = String(p || '').replace(/\D/g, ''); return d.l
 function normUsername(u) { return '@' + String(u || '').toLowerCase().replace(/[^a-z0-9_]/g, '').slice(0, 24); }
 
 /* ---- токены сессий (память + файл, переживают перезапуск) ---- */
-const TOKENS_FILE = path.join(ROOT, 'data', 'tokens.json');
+const TOKENS_FILE = path.join(process.env.TELEPORT_DATA_DIR || path.join(ROOT, 'data'), 'tokens.json');
 let tokens = {};
 try { fs.mkdirSync(path.dirname(TOKENS_FILE), { recursive: true }); tokens = JSON.parse(fs.readFileSync(TOKENS_FILE, 'utf8')); } catch (e) {}
 function saveTokens() { try { fs.writeFileSync(TOKENS_FILE, JSON.stringify(tokens)); } catch (e) {} }
@@ -100,10 +103,10 @@ function userByToken(t) {
   if (!rec || rec.exp < Date.now()) return null;
   return db.get('users', rec.userId);
 }
-function userByReq(req) {
+async function userByReq(req) {
   const h = req.headers.authorization || '';
   const t = h.startsWith('Bearer ') ? h.slice(7) : (req.url.split('token=')[1] || '').split('&')[0];
-  return userByToken(t);
+  return await userByToken(t);
 }
 function publicUser(u) {
   if (!u) return null;
@@ -183,10 +186,10 @@ function sendMail(to, subject, text) {
     }
     function authAndMail() {
       step('AUTH LOGIN', '334', () => step(Buffer.from(user).toString('base64'), '334', () =>
-        step(Buffer.from(pass).toString('base64'), '235', () => {
-          step('MAIL FROM:<' + from + '>', '250', () => step('RCPT TO:<' + to + '>', '250', finish));
-        }))));
-    }
+        step(Buffer.from(pass).toString('base64'), '235', () =>
+          step('MAIL FROM:<' + from + '>', '250', () => step('RCPT TO:<' + to + '>', '250', finish))
+        )));
+    } /*fixed*/
     function afterSecure() { step('EHLO teleport', null, authAndMail); }
     function startTls() {
       step('STARTTLS', '220', () => {
@@ -216,7 +219,7 @@ async function deliverCode(channel, target, code) {
 }
 
 /* ---- создание аккаунта ---- */
-function createUser({ name, username, provider, email, phone, pass, avatar }) {
+async function createUser({ name, username, provider, email, phone, pass, avatar }) {
   const u = {
     id: 'u_' + uid(), name: sanitize(name, 32) || 'Пользователь',
     username: username || ('@user' + uid().slice(0, 6)),
@@ -224,7 +227,7 @@ function createUser({ name, username, provider, email, phone, pass, avatar }) {
     avatar: avatar || null, bio: '', created_at: Date.now(),
   };
   if (pass) { u.salt = crypto.randomBytes(8).toString('hex'); u.pass_hash = hashPass(pass, u.salt); }
-  db.insert('users', u);
+  await db.insert('users', u);
   return u;
 }
 
@@ -238,9 +241,28 @@ const server = http.createServer(async (req, res) => {
   /* ---------- API ---------- */
   if (url.startsWith('/api/') || url.startsWith('/auth/')) {
 
+    /* --- промисифицированные обёртки БД: работают синхронно (SQLite/JSON) и асинхронно (PostgreSQL) --- */
+    const A = (v) => (v && typeof v.then === 'function') ? v : Promise.resolve(v);
+    const adb = {
+      get: (t, id) => A(db.get(t, id)), by: (t, c, v) => A(db.by(t, c, v)), one: (t, c, v) => A(db.one(t, c, v)),
+      insert: (t, o) => A(db.insert(t, o)), update: (t, id, p) => A(db.update(t, id, p)), remove: (t, id) => A(db.remove(t, id)),
+      where: (t, s, p) => A(db.where(t, s, p)), addContact: (o, p) => A(db.addContact(o, p)),
+      contactsOf: (o) => A(db.contactsOf(o)), history: (c, l) => A(db.history(c, l)), prune: (k) => A(db.prune(k)),
+    };
+    async function userByTokenA(t) {
+      const rec = tokens[t];
+      if (!rec || rec.exp < Date.now()) return null;
+      return await aadb.get('users', rec.userId);
+    }
+    async function userByReqA(req) {
+      const h = req.headers.authorization || '';
+      const t = h.startsWith('Bearer ') ? h.slice(7) : (req.url.split('token=')[1] || '').split('&')[0];
+      return userByTokenA(t);
+    }
+
     if (req.method === 'GET' && url === '/api/check') {
       const v = (q.get('v') || '').trim();
-      const taken = !!db.one('users', 'username', normUsername(v.replace(/^@/, '')));
+      const taken = !!(await adb.one('users', 'username', normUsername(v.replace(/^@/, ''))));
       return json(res, 200, { ok: true, taken });
     }
 
@@ -256,7 +278,7 @@ const server = http.createServer(async (req, res) => {
       let channel = null, target = '7' + phone;
       if (process.env.SMS_PROVIDER && (process.env.SMSCRU_LOGIN || process.env.CELLHIPPUS_TOKEN)) channel = 'sms';
       else if (emailMode && process.env.SMTP_HOST) {
-        const u = db.by('users', 'phone', phone)[0];
+        const u = await adb.by('users', 'phone', phone)[0];
         if (!u || !u.email) return json(res, 200, { ok: false, error: 'Для входа по телефону нужен e-mail-код (EMAIL_MODE) или SMS-шлюз. Зарегистрируйтесь по почте.' });
         channel = 'email'; target = u.email;
       } else {
@@ -278,9 +300,9 @@ const server = http.createServer(async (req, res) => {
       const b = await readJSON(req); if (!b) return json(res, 400, { ok: false, error: 'bad json' });
       const phone = normPhone(b.phone);
       if (!checkCode('ph:' + phone, b.code)) return json(res, 200, { ok: false, error: 'Неверный или истёкший код' });
-      let u = db.by('users', 'phone', phone)[0];
-      if (!u) u = createUser({ name: sanitize(b.name, 32) || 'Телефон-' + phone.slice(-4), provider: 'phone', phone });
-      else if (u.phone !== phone) db.update('users', u.id, { phone }); // привязка номера к существующему аккаунту
+      let u = await adb.by('users', 'phone', phone)[0];
+      if (!u) u = await createUser({ name: sanitize(b.name, 32) || 'Телефон-' + phone.slice(-4), provider: 'phone', phone });
+      else if (u.phone !== phone) await adb.update('users', u.id, { phone }); // привязка номера к существующему аккаунту
       return json(res, 200, { ok: true, token: makeToken(u.id), user: publicUser(u) });
     }
 
@@ -289,11 +311,11 @@ const server = http.createServer(async (req, res) => {
       const b = await readJSON(req); if (!b) return json(res, 400, { ok: false, error: 'bad json' });
       const email = sanitize(b.email, 64).toLowerCase();
       if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) return json(res, 200, { ok: false, error: 'Некорректная почта' });
-      if (db.where('users', 'email=?', [email]).length) return json(res, 200, { ok: false, error: 'Эта почта уже зарегистрирована' });
+      if (await adb.where('users', 'email=?', [email]).length) return json(res, 200, { ok: false, error: 'Эта почта уже зарегистрирована' });
       if (String(b.password || '').length < 6) return json(res, 200, { ok: false, error: 'Пароль минимум 6 символов' });
       const uname = normUsername(b.username || email.split('@')[0]);
       if (!uname || uname === '@') return json(res, 200, { ok: false, error: 'Придумайте @имя' });
-      if (db.one('users', 'username', uname)) return json(res, 200, { ok: false, error: '@имя занято' });
+      if (await adb.one('users', 'username', uname)) return json(res, 200, { ok: false, error: '@имя занято' });
       /* боевая проверка: код на почту обязателен, если SMTP настроен */
       if (process.env.SMTP_HOST && process.env.SMTP_USER) {
         if (!b.code) {
@@ -305,14 +327,14 @@ const server = http.createServer(async (req, res) => {
         }
         if (!checkCode('em:' + email, b.code)) return json(res, 200, { ok: false, need_code: true, error: 'Неверный или истёкший код из письма' });
       }
-      const u = createUser({ name: sanitize(b.name, 32) || email.split('@')[0], username: uname, provider: 'email', email, pass: b.password });
+      const u = await createUser({ name: sanitize(b.name, 32) || email.split('@')[0], username: uname, provider: 'email', email, pass: b.password });
       return json(res, 200, { ok: true, token: makeToken(u.id), user: publicUser(u) });
     }
     /* сброс пароля по почте */
     if (req.method === 'POST' && url === '/api/forgot_password') {
       const b = await readJSON(req); if (!b) return json(res, 400, { ok: false });
       const email = sanitize(b.email, 64).toLowerCase();
-      const u = db.where('users', 'email=?', [email])[0];
+      const u = await adb.where('users', 'email=?', [email])[0];
       if (!u) return json(res, 200, { ok: false, error: 'Аккаунт с такой почтой не найден' });
       if (!process.env.SMTP_HOST || !process.env.SMTP_USER) return json(res, 200, { ok: false, error: 'Восстановление по почте недоступно: не настроен SMTP' });
       if (!b.code) {
@@ -325,14 +347,14 @@ const server = http.createServer(async (req, res) => {
       if (!checkCode('rp:' + email, b.code)) return json(res, 200, { ok: false, need_code: true, error: 'Неверный или истёкший код' });
       if (String(b.new_password || '').length < 6) return json(res, 200, { ok: false, error: 'Новый пароль минимум 6 символов' });
       const salt = crypto.randomBytes(8).toString('hex');
-      db.update('users', u.id, { salt, pass_hash: hashPass(b.new_password, salt) });
-      return json(res, 200, { ok: true, token: makeToken(u.id), user: publicUser(db.get('users', u.id)) });
+      await adb.update('users', u.id, { salt, pass_hash: hashPass(b.new_password, salt) });
+      return json(res, 200, { ok: true, token: makeToken(u.id), user: publicUser(await adb.get('users', u.id)) });
     }
     /* e-mail: вход */
     if (req.method === 'POST' && url === '/api/login_email') {
       const b = await readJSON(req); if (!b) return json(res, 400, { ok: false, error: 'bad json' });
       const email = sanitize(b.email, 64).toLowerCase();
-      const u = db.where('users', 'email=?', [email])[0];
+      const u = await adb.where('users', 'email=?', [email])[0];
       if (!u || !u.pass_hash) return json(res, 200, { ok: false, error: 'Аккаунт не найден' });
       if (hashPass(b.password || '', u.salt) !== u.pass_hash) return json(res, 200, { ok: false, error: 'Неверный пароль' });
       return json(res, 200, { ok: true, token: makeToken(u.id), user: publicUser(u) });
@@ -396,12 +418,12 @@ const server = http.createServer(async (req, res) => {
           var avatar = prof.default_avatar ? `https://avatars.yandex.net/get-yapic/${prof.default_avatar}/islands-200` : null;
         }
         if (!uidProvider) throw new Error('не удалось определить id пользователя');
-        let u = db.where('users', 'provider=?', [prov]).find(x => x.ext_id === uidProvider) ||
-                (email && db.where('users', 'email=?', [email])[0]);
+        let u = await adb.where('users', 'provider=?', [prov]).find(x => x.ext_id === uidProvider) ||
+                (email && await adb.where('users', 'email=?', [email])[0]);
         if (!u) {
-          u = createUser({ name: String(name).trim(), username: normUsername(String(name).replace(/\s+/g, '_')), provider: prov, email, avatar });
-          db.update('users', u.id, { ext_id: uidProvider });
-        } else db.update('users', u.id, { name: String(name).trim() || u.name, avatar: avatar || u.avatar, ext_id: uidProvider });
+          u = await createUser({ name: String(name).trim(), username: normUsername(String(name).replace(/\s+/g, '_')), provider: prov, email, avatar });
+          await adb.update('users', u.id, { ext_id: uidProvider });
+        } else await adb.update('users', u.id, { name: String(name).trim() || u.name, avatar: avatar || u.avatar, ext_id: uidProvider });
         res.writeHead(302, { Location: '/#token=' + makeToken(u.id) });
         res.end();
       } catch (e) {
@@ -413,13 +435,13 @@ const server = http.createServer(async (req, res) => {
 
     /* текущий профиль */
     if (req.method === 'GET' && url === '/api/me') {
-      const u = userByReq(req);
+      const u = await userByReqA(req);
       return u ? json(res, 200, { ok: true, user: publicUser(u) }) : json(res, 401, { ok: false, error: 'no session' });
     }
 
     /* обновление профиля */
     if (req.method === 'POST' && url === '/api/profile') {
-      const u = userByReq(req); if (!u) return json(res, 401, { ok: false });
+      const u = await userByReqA(req); if (!u) return json(res, 401, { ok: false });
       const b = await readJSON(req); if (!b) return json(res, 400, { ok: false });
       const patch = {};
       if (b.name) patch.name = sanitize(b.name, 32);
@@ -427,21 +449,21 @@ const server = http.createServer(async (req, res) => {
       if (typeof b.avatar === 'string' && b.avatar.startsWith('data:image/')) patch.avatar = b.avatar.slice(0, 300 * 1024);
       if (b.username) {
         const uname = normUsername(b.username);
-        const busy = db.one('users', 'username', uname);
+        const busy = await adb.one('users', 'username', uname);
         if (busy && busy.id !== u.id) return json(res, 200, { ok: false, error: '@имя занято' });
         patch.username = uname;
       }
-      db.update('users', u.id, patch);
-      return json(res, 200, { ok: true, user: publicUser(db.get('users', u.id)) });
+      await adb.update('users', u.id, patch);
+      return json(res, 200, { ok: true, user: publicUser(await adb.get('users', u.id)) });
     }
 
     /* поиск людей по @username / имени */
     if (req.method === 'GET' && url === '/api/search_users') {
-      const me = userByReq(req); if (!me) return json(res, 401, { ok: false });
+      const me = await userByReqA(req); if (!me) return json(res, 401, { ok: false });
       const raw = (q.get('q') || '').trim().toLowerCase();
       if (raw.length < 2) return json(res, 200, { ok: true, users: [] });
       const wantUname = raw.startsWith('@') ? normUsername(raw.slice(1)) : null;
-      const all = db.where('users', 'id IS NOT NULL').filter(u =>
+      const all = await adb.where('users', 'id IS NOT NULL').filter(u =>
         u.id !== me.id && (wantUname ? u.username === wantUname : (String(u.name).toLowerCase().includes(raw) || String(u.username).toLowerCase().includes(raw)))
       ).slice(0, 20).map(publicUser);
       return json(res, 200, { ok: true, users: all });
@@ -480,7 +502,11 @@ const server = http.createServer(async (req, res) => {
   if (req.method !== 'GET' && req.method !== 'HEAD') { res.writeHead(405); res.end(); return; }
   let fileUrl = url === '/' ? '/index.html' : url;
   const file = path.normalize(path.join(ROOT, fileUrl)).replace(/^(\.\.[\/\\])+/, '');
-  fs.readFile(file, (err, data) => {
+  /* При TELEPORT_DATA_DIR загрузки лежат на диске данных — ищем их там в первую очередь. */
+  const readTarget = (fileUrl.startsWith('/uploads/') && process.env.TELEPORT_DATA_DIR)
+    ? path.join(MEDIA_DIR, path.basename(file))
+    : file;
+  fs.readFile(readTarget, (err, data) => {
     if (err) {
       fs.readFile(path.join(ROOT, 'index.html'), (e2, html) => {
         if (e2) { res.writeHead(404); res.end('Not found'); return; }
@@ -527,8 +553,8 @@ function leaveAllRooms(ws) {
 }
 function ensureRoom(chatId) { if (!rooms.has(chatId)) rooms.set(chatId, new Set()); }
 
-function saveMessage(m) {
-  db.insert('messages', {
+async function saveMessage(m) {
+  await db.insert('messages', {
     id: m.mid, chat_id: m.chatId, sender: m.fromId || 'anon', text: m.text || '',
     media: JSON.stringify({
       mediaUrl: m.mediaUrl || null, fileUrl: m.fileUrl || null, fileName: m.fileName || null,
@@ -548,13 +574,13 @@ wss.on('connection', (ws, req) => {
   ws.isAlive = true;
   ws.on('pong', () => { ws.isAlive = true; });
 
-  ws.on('message', (raw) => {
+  ws.on('message', async (raw) => {
     let m; try { m = JSON.parse(raw.toString()); } catch (e) { return; }
     const me = ws._user;
 
     switch (m.t) {
       case 'auth': { // { t:'auth', token }
-        const u = userByToken(String(m.token || ''));
+        const u = await userByToken(String(m.token || ''));
         if (!u) return send(ws, { t: 'auth_fail' });
         ws._user = u;
         if (!byUser.has(u.id)) byUser.set(u.id, new Set());
@@ -562,12 +588,12 @@ wss.on('connection', (ws, req) => {
         send(ws, { t: 'auth_ok', me: publicUser(u) });
         // подписка: общий чат + все личные комнаты пользователя
         const myRooms = new Set(['room_global']);
-        for (const cid of db.contactsOf(u.id)) myRooms.add(cid);
+        for (const cid of await db.contactsOf(u.id)) myRooms.add(cid);
         for (const c of myRooms) { ensureRoom(c); rooms.get(c).add(ws); (ws._chats = ws._chats || new Set()).add(c); }
         // история — чтобы чаты восстановились на любом устройстве
         const chatsOut = [];
         for (const c of myRooms) {
-        const hist = db.history(c, 300).map(row => {
+        const hist = await db.history(c, 300).map(row => {
           const md = parseMedia(row);
           return Object.assign({
             mid: row.id, chatId: c, senderId: row.sender,
@@ -594,8 +620,8 @@ wss.on('connection', (ws, req) => {
       case 'contacts:add': { // { t:'contacts:add', peerUserId, chatId }
         if (!me) return;
         const chatId = String(m.chatId || '').slice(0, 80);
-        db.addContact(me.id, chatId);
-        db.addContact(String(m.peerUserId), chatId); // взаимно — чат появится у собеседника
+        await db.addContact(me.id, chatId);
+        await db.addContact(String(m.peerUserId), chatId); // взаимно — чат появится у собеседника
         ensureRoom(chatId);
         toUser(String(m.peerUserId), { t: 'contact_added', from: publicUser(me), chatId });
         send(ws, { t: 'ok', what: 'contacts:add' });
@@ -624,24 +650,24 @@ wss.on('connection', (ws, req) => {
             : null,
           fwdFrom: m.fwdFrom ? String(m.fwdFrom).slice(0, 32) : null,
         };
-        saveMessage(payload);
+        await saveMessage(payload);
         toChat(chatId, payload, ws);
         break;
       }
 
       case 'edit': { // { t:'edit', chatId, mid, text }
         if (!me) return;
-        const row = db.get('messages', String(m.mid || '').slice(0, 32));
+        const row = await db.get('messages', String(m.mid || '').slice(0, 32));
         if (!row || row.sender !== me.id) return;
-        db.update('messages', row.id, { text: String(m.text || '').slice(0, 4000), edited: 1 });
+        await db.update('messages', row.id, { text: String(m.text || '').slice(0, 4000), edited: 1 });
         toChat(String(m.chatId), { t: 'edit', chatId: row.chat_id, mid: row.id, text: String(m.text || '').slice(0, 4000) }, ws);
         break;
       }
       case 'del': { // { t:'del', chatId, mid }
         if (!me) return;
-        const row = db.get('messages', String(m.mid || '').slice(0, 32));
+        const row = await db.get('messages', String(m.mid || '').slice(0, 32));
         if (!row || row.sender !== me.id) return;
-        db.update('messages', row.id, { deleted: 1, text: '', media: null });
+        await db.update('messages', row.id, { deleted: 1, text: '', media: null });
         toChat(String(m.chatId), { t: 'del', chatId: row.chat_id, mid: row.id }, ws);
         break;
       }
@@ -700,7 +726,7 @@ setInterval(() => {
 /* чистка старой истории: держим последние 1000 сообщений на комнату */
 setInterval(() => { try { db.prune(1000); } catch (e) {} }, 6 * 3600000).unref?.();
 
-server.listen(PORT, () => {
+server.listen(PORT, process.env.BIND_HOST || '0.0.0.0', () => {
   console.log(`✅ Teleport PRO запущен: http://localhost:${PORT}`);
   console.log(`   База данных: ${db.engine}`);
   console.log(`   WebSocket: ws://localhost:${PORT}/ws`);

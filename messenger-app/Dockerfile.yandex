@@ -1,0 +1,25 @@
+# Teleport PRO — образ для Yandex Cloud Container Registry + Serverless Containers / VM
+FROM node:20-alpine
+WORKDIR /app
+
+# зависимости (только ws — лёгкий, нативных модулей нет)
+COPY package.json ./
+RUN npm install --omit=dev && npm cache clean --force
+
+# код приложения
+COPY server.js db.js sw.js manifest.webmanifest index.html ./
+COPY js ./js
+COPY css ./css
+COPY icons ./icons
+COPY vendor ./vendor
+
+# каталоги данных (перекрываются сетевым диском при TELEPORT_DATA_DIR)
+RUN mkdir -p /app/data /app/uploads
+
+ENV PORT=8080 NODE_ENV=production
+EXPOSE 8080
+
+HEALTHCHECK --interval=30s --timeout=5s --retries=3 \
+  CMD wget -qO- http://127.0.0.1:${PORT}/ >/dev/null || exit 1
+
+CMD ["node", "server.js"]

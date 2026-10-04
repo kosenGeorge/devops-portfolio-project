@@ -166,7 +166,7 @@
     box.classList.remove('shake'); void box.offsetWidth; box.classList.add('shake');
   }
   function showForm(which) {
-    ['authMethods', 'emailForm', 'emailLoginForm', 'phoneForm', 'codeForm'].forEach(id => $('#' + id).classList.add('hidden'));
+    ['authMethods', 'emailForm', 'emailLoginForm', 'phoneForm', 'codeForm', 'forgotForm'].forEach(id => $('#' + id).classList.add('hidden'));
     $('#' + which).classList.remove('hidden');
     authError('');
   }
@@ -185,11 +185,14 @@
         name: $('#regName').value.trim(), username: $('#regUser').value.trim(),
         email: $('#regEmail').value.trim(), password: $('#regPass').value,
       };
+      if ($('#emailCodeRow').classList.contains('hidden') === false) b.code = $('#regEmailCode').value.trim();
       if (!b.name) return authError('Укажите имя');
       if (!b.email) return authError('Укажите почту');
       authBtnBusy($('#btnSignup'), async () => {
         const r = await Net.Auth.signupEmail(b);
-        if (r.ok) afterAuth(r); else authError(r.error || 'Ошибка регистрации');
+        if (r.ok) afterAuth(r);
+        else if (r.need_code) { $('#emailCodeRow').classList.remove('hidden'); authError(r.error || 'Введите код из письма'); }
+        else authError(r.error || 'Ошибка регистрации');
       });
     };
     $('#btnLoginEmail').onclick = async () => {
@@ -207,7 +210,6 @@
         authPhone = ph;
         $('#codePhoneLabel').textContent = formatPhone(ph);
         showForm('codeForm');
-        if (r.demo_code) { $('#regCode').value = r.demo_code; authError('SMS-шлюз не подключён — код показан автоматически (демо-режим)'); }
       });
     };
     $('#resendCode').onclick = () => $('#btnSendCode').click();
@@ -215,6 +217,27 @@
       authBtnBusy($('#btnCheckCode'), async () => {
         const r = await Net.Auth.loginPhone(authPhone, $('#regCode').value, $('#regNamePh').value.trim());
         if (r.ok) afterAuth(r); else authError(r.error || 'Ошибка подтверждения');
+      });
+    };
+
+    /* --- сброс пароля по e-mail --- */
+    let forgotStage = 0;
+    $('#forgotLink') && ($('#forgotLink').onclick = () => { forgotStage = 0; $('#fpCodeRow').classList.add('hidden'); $('#fpNewRow').classList.add('hidden'); $('#btnForgot').textContent = 'Отправить код'; showForm('forgotForm'); });
+    $('#toLoginFromForgot') && ($('#toLoginFromForgot').onclick = () => showForm('emailLoginForm'));
+    $('#btnForgot').onclick = async () => {
+      authBtnBusy($('#btnForgot'), async () => {
+        const b = { email: $('#fpEmail').value.trim() };
+        if (forgotStage === 1) b.code = $('#fpCode').value.trim();
+        if (forgotStage === 2) { b.code = $('#fpCode').value.trim(); b.new_password = $('#fpNewPass').value; }
+        const r = await Net.Auth.forgotPassword(b);
+        if (r.ok) return afterAuth(r);
+        if (r.need_code) {
+          $('#fpCodeRow').classList.remove('hidden');
+          if (forgotStage === 0) { forgotStage = 1; $('#btnForgot').textContent = 'Подтвердить код'; }
+          else { forgotStage = 2; $('#fpNewRow').classList.remove('hidden'); $('#btnForgot').textContent = 'Сменить пароль'; }
+          return authError(r.error || 'Введите код из письма');
+        }
+        authError(r.error || 'Ошибка');
       });
     };
 
