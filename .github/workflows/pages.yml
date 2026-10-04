@@ -23,10 +23,8 @@ jobs:
       - name: Prepare site (hub landing + /messenger/)
         run: |
           mkdir -p _site
-          # Извлекаем финальный сайт из Dockerfile (тот же код, что и в docker build) —
-          # чтобы на GitHub Pages НЕ попадала старая докер-заглушка из корня репозитория
-          sed -n '/^RUN mkdir -p \/usr\/share\/nginx\/html\/legacy/,/^HTML$/p' Dockerfile \
-            | sed '1d;$d' > _site/index.html
+          # Берём актуальный корневой index.html (старая докер-заглушка удалена из репозитория)
+          cp index.html _site/index.html
           cp -r messenger-app _site/messenger
           rm -rf _site/messenger/node_modules _site/messenger/capacitor _site/messenger/serve.js
           # служебные файлы для Pages
