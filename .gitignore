@@ -1,1 +1,5 @@
+# Dependencies
 node_modules/
+
+# Build artifacts and lock files (optional, but common for JS projects)
+package-lock.json
