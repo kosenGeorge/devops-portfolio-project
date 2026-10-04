@@ -135,3 +135,18 @@ This project was developed as part of a practical DevOps learning journey
 Special thanks to the Docker and Ubuntu communities for excellent documentation
 
 Inspired by real-world production infrastructure patterns
+
+---
+
+# 📨 Teleport — мессенджер (PWA → Android APK)
+
+В папке [`messenger-app/`](messenger-app/) лежит **полностью готовый мессенджер в стиле Telegram**:
+чаты, галочки прочтения, «печатает…», ответы/редактирование/удаление, фото, эмодзи, поиск,
+тёмная тема, уведомления, офлайн-режим и сборка в `.apk` через Capacitor или PWA Builder.
+
+📖 Инструкция по запуску и сборке APK: **[messenger-app/README.md](messenger-app/README.md)**
+
+```bash
+# быстрый старт
+cd messenger-app && node serve.js   # → http://localhost:8080
+```

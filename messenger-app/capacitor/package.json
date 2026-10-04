@@ -1,0 +1,17 @@
+{
+  "name": "teleport-messenger",
+  "version": "1.0.0",
+  "description": "Teleport — мессенджер в стиле Telegram (PWA + Capacitor -> APK)",
+  "main": "index.js",
+  "scripts": {
+    "start": "node ../serve.js",
+    "sync": "npx cap sync android",
+    "apk:debug": "npm run sync && npx cap build android --variant debug",
+    "apk:release": "npm run sync && npx cap build android"
+  },
+  "dependencies": {
+    "@capacitor/android": "^6.1.2",
+    "@capacitor/cli": "^6.1.2",
+    "@capacitor/core": "^6.1.2"
+  }
+}

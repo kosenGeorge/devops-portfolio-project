@@ -1,0 +1,110 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
+  <meta name="theme-color" content="#0088cc" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <title>Teleport — Messenger</title>
+
+  <link rel="manifest" href="manifest.webmanifest" />
+  <link rel="icon" href="icons/icon-192.png" />
+  <link rel="stylesheet" href="vendor/bootstrap-icons.css" />
+  <link rel="stylesheet" href="css/style.css" />
+</head>
+<body>
+
+<!-- =================== LOGIN SCREEN =================== -->
+<div id="loginScreen" class="login-screen">
+  <div class="login-card">
+    <div class="login-logo"><i class="bi bi-send-fill"></i></div>
+    <h1>Teleport</h1>
+    <p class="login-sub">Быстрый и приватный мессенджер</p>
+    <input id="loginName" type="text" maxlength="32" placeholder="Ваше имя" autocomplete="off" />
+    <button id="loginBtn" class="btn-primary">Начать чат</button>
+    <p class="login-hint">Данные хранятся только на вашем устройстве (localStorage)</p>
+  </div>
+</div>
+
+<!-- =================== APP LAYOUT =================== -->
+<div id="app" class="app hidden">
+
+  <!-- LEFT: sidebar / chat list -->
+  <aside id="sidebar" class="sidebar">
+    <div class="sidebar-header">
+      <button id="menuBtn" class="icon-btn"><i class="bi bi-list"></i></button>
+      <div class="search-wrap">
+        <i class="bi bi-search"></i>
+        <input id="searchInput" type="text" placeholder="Поиск" autocomplete="off"/>
+      </div>
+      <button id="newChatBtn" class="icon-btn"><i class="bi bi-pencil-fill"></i></button>
+    </div>
+
+    <!-- burger menu drawer -->
+    <div id="drawer" class="drawer hidden">
+      <div class="drawer-profile">
+        <div class="avatar" id="drawerAvatar">Я</div>
+        <div>
+          <div class="drawer-name" id="drawerName">Гость</div>
+          <div class="drawer-status">в сети</div>
+        </div>
+      </div>
+      <div class="drawer-item" data-action="toggle-theme"><i class="bi bi-moon-stars"></i> Тёмная тема</div>
+      <div class="drawer-item" data-action="toggle-notif"><i class="bi bi-bell"></i> Уведомления <span id="notifState">вкл</span></div>
+      <div class="drawer-item" data-action="clear-all"><i class="bi bi-trash"></i> Очистить все чаты</div>
+      <div class="drawer-item" data-action="logout"><i class="bi bi-box-arrow-right"></i> Выйти</div>
+    </div>
+
+    <div id="chatList" class="chat-list"></div>
+
+    <div class="new-chat-panel hidden" id="newChatPanel">
+      <input id="newChatInput" placeholder="Имя нового контакта / группы" autocomplete="off"/>
+      <button id="newChatCreate" class="btn-primary sm">Создать</button>
+    </div>
+  </aside>
+
+  <!-- RIGHT: chat area -->
+  <main id="chatArea" class="chat-area">
+    <div class="chat-empty" id="chatEmpty">
+      <div class="chat-empty-badge">Выберите чат, чтобы начать переписку</div>
+    </div>
+
+    <div class="chat-view hidden" id="chatView">
+      <header class="chat-header">
+        <button id="backBtn" class="icon-btn only-mobile"><i class="bi bi-arrow-left"></i></button>
+        <div class="peer-avatar" id="peerAvatar">T</div>
+        <div class="peer-info">
+          <div class="peer-name" id="peerName">—</div>
+          <div class="peer-status" id="peerStatus">был(а) недавно</div>
+        </div>
+        <button class="icon-btn" id="callBtn"><i class="bi bi-telephone"></i></button>
+        <button class="icon-btn" id="infoBtn"><i class="bi bi-three-dots-vertical"></i></button>
+      </header>
+
+      <div class="messages" id="messages"></div>
+
+      <button class="scroll-bottom hidden" id="scrollBottomBtn"><i class="bi bi-chevron-down"></i></button>
+
+      <footer class="composer">
+        <button class="icon-btn" id="attachBtn"><i class="bi bi-paperclip"></i></button>
+        <div class="input-wrap">
+          <textarea id="msgInput" rows="1" placeholder="Сообщение"></textarea>
+        </div>
+        <button class="icon-btn" id="emojiBtn"><i class="bi bi-emoji-smile"></i></button>
+        <button class="send-btn" id="sendBtn"><i class="bi bi-send-fill"></i></button>
+      </footer>
+
+      <div class="emoji-panel hidden" id="emojiPanel"></div>
+      <input type="file" id="fileInput" accept="image/*" hidden />
+    </div>
+  </main>
+</div>
+
+<!-- toast -->
+<div id="toast" class="toast hidden"></div>
+
+<script src="js/store.js"></script>
+<script src="js/bot.js"></script>
+<script src="js/app.js"></script>
+</body>
+</html>
